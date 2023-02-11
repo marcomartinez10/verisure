@@ -1,0 +1,2183 @@
+BEGIN  
+
+declare mensaje varchar(2000); 
+declare proceso varchar(100);
+declare var_anio int;
+declare var_mes int;
+declare var_dia int;
+declare var_primer_dia_mes date;
+declare var_mes_char varchar(2);
+declare var_anio_mes varchar(6);
+declare var_count_iso3 varchar(3);
+declare nid_country int;
+declare var_reportPeriod int;
+declare var_fecha_device int;
+
+declare @QUERY varchar(10000);
+declare @TABLE_590 varchar(40);    
+declare id_fecha_in int;
+declare var_anio_mes_fr varchar(7);
+declare id_fecha_primer_dia_mes int;
+declare num_ins_tratar int;
+declare num_reg_ITA int;
+declare num_cola_ini int;
+declare var_nfecha_primer_dia int;
+declare num_reg_mes int;
+declare var_mes_menos date;
+declare num_reg_mes_cargado int;
+
+declare num_reg_FRA int;
+declare var_anio_act int;
+declare var_mes_act int;
+declare var_mes_char_act varchar(2);
+declare var_anio_mes_act varchar(6);
+declare var_anio_FR int;
+declare var_mes_FR int;
+
+declare var_count_iso2 varchar(5);
+declare dat_three_month_before date;
+declare previous_day date;
+
+declare var_K_date int;
+declare dat_previous_3month date;
+declare sales_type_registers int;
+
+--declare var_country_name varchar(15);
+--declare date_fecha_portf_in date;
+
+--set var_country_name = 'ESPAÑA';
+--set var_country_name = 'PERU';
+--set var_country_name = 'PORTUGAL';
+--set var_country_name = 'ARGENTINA';
+--set var_country_name = 'ITALIA';
+--set var_country_name = 'IRELAND';
+--set var_country_name = 'UK';
+--set var_country_name = 'CHILE';
+--set var_country_name = 'FRANCE';
+--set var_country_name = 'BRASIL';
+--set date_fecha_portf_in = getdate();
+--set nid_country = 9;
+
+set mensaje='';
+set proceso='SP_ODS_FACT_INSTALLATIONS_DEVICES_S';
+set temporary option chained=OFF;
+set temporary option MINIMIZE_STORAGE='OFF';
+set dateformat dmy;
+
+CREATE TABLE ##New_Ins (
+       ins_no               varchar(12) NULL,
+       var_anio_mes         varchar(6) NULL,
+       K_Country            varchar(3) NULL,
+       K_PortfolioStatus    smallint NULL,
+       K_CustomerType       smallint NULL,
+       k_GWGeneration       smallint NULL,
+       K_InstSubtype        integer NULL,
+       Platform             char(1) NULL,
+       mon_stat             char(4) NULL,
+       panel                varchar(10) NULL,
+       inst_date            date NULL,
+       quantita             decimal(15,2)) ;
+
+set mensaje = proceso || ': ' || getdate() || ' -> Inicio Procedimiento';
+message mensaje type info to client;
+
+select co_iso3,
+       id_cod,
+       id_pais2
+into var_count_iso3,
+     nid_country,
+     var_count_iso2
+from ods_owner.D_COUNTRIES_MNT 
+where country=var_country_name;
+
+
+-- * Necesitamos tener una fecha de cierre del Portfolio porque es cuando se hará la foto de MT Report y sobre la cual se basarán todos los cálculos.
+-- * En el caso de 590, si en esa fecha no se encuentra cerrado se cogera de M en vez de H, perdiendo por lo tanto las facturaciones posteriores a esa fecha
+-- * de cierre en ese mes.
+
+-- Cálculo del periodo. ESPAÑA Y MCA van a buscar a la tabla de Fechas para ver cual es su periodo.
+IF var_country_name='ESPAÑA' THEN
+
+       select ano_cierre,
+              numero_cierre_mes 
+       into 	   
+              var_anio,
+              var_mes
+       from ods_owner.D_FECHA
+       where date(FECHA) =date(date_fecha_portf_in)-1;  
+
+ELSE IF var_country_name <>'ITALIA' and var_country_name <>'FRANCE' THEN  -- MCA
+
+       select ano_cierre,
+              numero_cierre_mes 
+       into 	   
+              var_anio,
+              var_mes       
+       from ods_owner.D_FECHA_INT 
+       where id_country=nid_country
+       and date(FECHA) =date(date_fecha_portf_in)-1;   
+       
+       message ' MCA VAR MES (numero de mes en curso): ' ||var_mes  type info to client;  
+       message ' MCA VAR ANIO (numero de año en curso): ' ||var_anio  type info to client;  
+       message '                                         '  type info to client; 
+       
+     END IF;
+END IF;   
+
+message '====================================== PORTFOLIO ======================================'  type info to client;
+
+-- ** PORTFOLIOS EXTERNOS ** --
+IF var_country_name='ITALIA' THEN
+
+       -- Está ya cargado M-1?
+       select dateadd(mm,-1,date_fecha_portf_in) into var_mes_menos;
+
+       select year(var_mes_menos) into var_anio;
+       select month(var_mes_menos) into var_mes;
+       select case when var_mes <10 then '0'|| cast(var_mes as varchar(1))
+              else cast(var_mes as varchar(2)) end into var_mes_char;       
+
+       select cast(var_anio as varchar(6))||var_mes_char into var_anio_mes;     
+
+       select cast((cast(var_anio as varchar(6))||'/'||var_mes_char||'/01' ) as date) into var_primer_dia_mes;   
+
+       select count() into num_reg_mes_cargado
+       from ods_owner.FACT_GROUP_INSTALLATIONS_IN_PORTFOLIO_S 
+       where K_Country =var_count_iso3
+             and ReportPeriod = cast(var_anio_mes as int);
+
+       IF num_reg_mes_cargado <> 0 THEN -- hay datos ya cargados mes pasado - > CARGA DIARIA mes actual
+
+              -- cambiamos a mes actual
+              select year(date_fecha_portf_in) into var_anio;
+              select month(date_fecha_portf_in) into var_mes;
+              select case when var_mes <10 then '0'|| cast(var_mes as varchar(1))
+              else cast(var_mes as varchar(2))
+              end into var_mes_char;
+
+              select cast(var_anio as varchar(6))||var_mes_char into var_anio_mes;     
+
+              select cast((cast(var_anio as varchar(6))||'/'||var_mes_char||'/01' ) as date) into var_primer_dia_mes;   
+
+             -- ** PORTFOLIO ITALIA DIA
+              select var_anio_mes,
+                     var_count_iso3 as K_Country,
+                     panel,
+                     ins_no ,
+                     sub_tp_def as sub_tp,
+                     'S'as Platform, 
+                     mese_ingresso,
+                     anno_ingresso,
+                     price_list_def,
+                     quantita,
+                     inst_date,
+                     mon_stat,
+                     '' as tipo,
+                     date('1980/01/01') as dt_ins_record,
+                     t1.month_h,
+                     t1.year_h                          
+              into ##datos_portfolio_IT
+              from ods_owner.FACT_PORTFOLIO_IT_DAY t1
+              where year_h = var_anio
+                     and month_h = var_mes
+                     and (sub_tp_def in ('10','11','12','13','14','15','16','17','18','19','20','21') or sub_tp_def is NULL)
+                     and panel in ('SDVECUW','SDVECU','SDVFAST', 'SDVFSW');  
+
+              message 'Ya hay datos en fact_grp_portfolio para italia del mes anterior a fecha:' ||date_fecha_portf_in type info to client;
+              message ' Se carga el mes de fecha:'|| date_fecha_portf_in || ' (actual) de FACT_PORTFOLIO_IT_DAY  ' type info to client;
+              message ' var primer dia mes: ' ||var_primer_dia_mes  type info to client;  
+              message 'PORTFOLIO DIA ' ||var_country_name ||' '|| getdate() || ' -> Proceso OK ' type info to client; -- ITALIA
+    
+       
+       ELSE                 -- No hay datos del mes pasado
+
+              select count()
+              into num_reg_ITA
+              from ods_ita.FACT_PORTF_CLIENTI_ITA t1
+              where t1.year_h = var_anio
+                     and t1.month_h = var_mes;    
+
+              IF num_reg_ITA = 0 THEN                   -- No hay datos del mes pasado en ITA. CARGA DIARIA mes actual
+
+                     -- cambiamos a mes actual
+                     select year(date_fecha_portf_in) into var_anio;
+                     select month(date_fecha_portf_in) into var_mes;
+                     select case when var_mes <10 then '0'|| cast(var_mes as varchar(1))
+                     else cast(var_mes as varchar(2))
+                     end into var_mes_char;
+
+                     select cast(var_anio as varchar(6))||var_mes_char into var_anio_mes;     
+
+                     select cast((cast(var_anio as varchar(6))||'/'||var_mes_char||'/01' ) as date) into var_primer_dia_mes;   
+
+                     -- ** PORTFOLIO ITALIA DIA
+                     select var_anio_mes,
+                            var_count_iso3 as K_Country,
+                            panel,
+                            ins_no ,
+                            sub_tp_def as sub_tp,
+                            'S'as Platform, 
+                            mese_ingresso,
+                            anno_ingresso,
+                            price_list_def,
+                            quantita,
+                            inst_date,
+                            mon_stat,
+                            '' as tipo,
+                            date('1980/01/01') as dt_ins_record,
+                            t1.month_h,
+                            t1.year_h                          
+                     into ##datos_portfolio_IT
+                     from ods_owner.FACT_PORTFOLIO_IT_DAY t1
+                     where year_h = var_anio
+                            and month_h = var_mes
+                            and (sub_tp_def in ('10','11','12','13','14','15','16','17','18','19','20','21') or sub_tp_def is NULL)
+                            and panel in ('SDVECUW','SDVECU','SDVFAST', 'SDVFSW');  
+
+                     message 'PORTFOLIO DIA ' ||var_country_name ||' '|| getdate() || ' -> Proceso OK ' type info to client; -- ITALIA
+
+              ELSE                                      -- Hay datos del mes pasado en ITA. Carga MESUAL
+
+                     -- ** PORTFOLIO ITALIA MES
+                     select var_anio_mes,
+                            var_count_iso3 as K_Country,
+                            t2.panel,
+                            t1.ins_no ,
+                            t1.sub_tp_def as sub_tp,
+                            'S'as Platform, 
+                            t1.mese_ingresso,
+                            t1.anno_ingresso,
+                            t1.price_list_def,
+                            t1.quantita,
+                            date(t2.ins_dt) as inst_date,
+                            t2.mon_stat,
+                            t1.tipo,
+                            t1.dt_ins_record,
+                            t1.month_h,
+                            t1.year_h    
+                     into ##datos_portfolio_IT
+                     from ods_ita.FACT_PORTF_CLIENTI_ITA t1
+                     left join ods_ita.D_INSTALACION_INT t2
+                            on (t1.ins_no = t2.ins_no
+                                   and t2.id_country =nid_country)
+                     where t1.year_h = var_anio
+                            and t1.month_h = var_mes
+                            and (t1.sub_tp_def in ('10','11','12','13','14','15','16','17','18','19','20','21') or t1.sub_tp_def is NULL)
+                            and t2.panel in ('SDVECUW','SDVECU','SDVFAST', 'SDVFSW');  -- no filtra por INV, MONIT       
+
+                     message 'PORTFOLIO MES ' ||var_country_name ||' '|| getdate() || ' -> Proceso OK ' type info to client; -- ITALIA       
+              END IF;
+
+       END IF;
+
+       message 'PERIODO DE CÁLCULO '||var_country_name||' : '||var_primer_dia_mes type info to client;
+
+ELSEIF var_country_name='FRANCE' THEN
+
+       -- M-1
+       select dateadd(mm,-1,date_fecha_portf_in) into var_mes_menos;
+
+       select year(var_mes_menos) into var_anio;
+       select month(var_mes_menos) into var_mes;
+       select case when var_mes <10 then '0'|| cast(var_mes as varchar(1))
+              else cast(var_mes as varchar(2)) end into var_mes_char;       
+
+       select cast(var_anio as varchar(6))||var_mes_char into var_anio_mes;     
+
+       -- M actual
+       select year(date(date_fecha_portf_in)-1) into var_anio_act;
+       select month(date(date_fecha_portf_in)-1) into var_mes_act;
+       select case when var_mes_act <10 then '0'|| cast(var_mes_act as varchar(1))
+              else cast(var_mes_act as varchar(2)) end into var_mes_char_act;       
+
+       select cast(var_anio_act as varchar(6))||var_mes_char_act into var_anio_mes_act; 
+
+
+       -- Está ya cargado M-1?
+       select count() into num_reg_mes_cargado
+       from ods_owner.FACT_GROUP_INSTALLATIONS_IN_PORTFOLIO_S 
+       where K_Country =var_count_iso3
+             and ReportPeriod = cast(var_anio_mes as int);
+
+       IF num_reg_mes_cargado <> 0 THEN -- hay datos ya cargados mes pasado - > CARGA DIARIA mes actual
+
+              set var_anio_FR = var_anio_act;
+              set var_mes_FR = var_mes_act;
+              select cast((cast(var_anio_act as varchar(6))||'/'||var_mes_char_act||'/01' ) as date) into var_primer_dia_mes;   
+
+              -- ** PORTFOLIO FRANCE DIA
+              -- Recogemos los datos del día previo
+              select
+                     var_anio_mes_act as var_anio_mes,
+                     var_count_iso3 as K_Country,
+                     t1.PANEL,
+                     t1.CUSTOMER_TYPE AS CUSTOMER_TYPE_FROM_CTR_TP,
+                     SUBSTRING(t2.sub_exptp,2,1) as sub_tp,            -- sub_tp propio -> convertir
+                     'S'as Platform, 
+                     cast(t1.INSTALL_NUM as varchar(11))as ins_no,
+                     t1.MON_STAT,
+                     date(t1.INSTALL_DATE) as inst_date 		
+              into ##datos_portfolio_FR
+              from ods_owner.SRC_SkylabFR_v_PORTFOLIO_LIVE t1
+              left join ods_owner.fr_ma_installations t2        
+                     on (t1.S#INS= t2.s#ins)
+              where date(PORTFOLIO_DATE)  = date(date_fecha_portf_in)-1
+                     and STACK_TYPE='IN'
+                     and PERIMETER ='VERISURE - SOUTH'
+                     and t1.PANEL in ('SDVECUW','SDVECU','SDVFAST','SDVFSW');  
+                
+              message 'YA HAY DATOS CARGADOS DEL MES PASADO EN MT REPORTS, SE CARGA DE SKYLAB LIVE CON FECHA 1 DIA MENOS DE LA INTRODUCIDA '  type info to client;  
+              message 'PORTFOLIO DIA ' ||var_country_name ||' '|| getdate() || ' -> Proceso OK ' type info to client;  
+
+       ELSE  -- No hay datos del mes pasado cargados en MT_Report
+
+              -- Fecha Francia yyyy-mm
+              select cast(var_anio as varchar(6))||'-'||var_mes_char into var_anio_mes_fr;    -- (mes pasado)
+
+              select count()
+              into num_reg_FRA
+              from ods_owner.SRC_SkylabFR_v_PORTFOLIO_SNAPSHOT t1
+              where CLOSING_PERIOD = var_anio_mes_fr;
+
+              IF num_reg_FRA = 0 THEN                   -- No hay datos del mes pasado en FRANCE. CARGA DIARIA mes actual
+
+                     set var_anio_FR = var_anio_act;
+                     set var_mes_FR = var_mes_act;
+                     select cast((cast(var_anio_act as varchar(6))||'/'||var_mes_char_act||'/01' ) as date) into var_primer_dia_mes;   
+
+                     -- ** PORTFOLIO FRANCE DIA
+                     -- Recogemos los datos del día previo
+                     select 
+                            var_anio_mes_act as var_anio_mes,
+                            var_count_iso3 as K_Country,
+                            t1.PANEL,
+                            t1.CUSTOMER_TYPE AS CUSTOMER_TYPE_FROM_CTR_TP,
+                            SUBSTRING(t2.sub_exptp,2,1) as sub_tp,            -- sub_tp propio -> convertir
+                            'S'as Platform, 
+                            cast(t1.INSTALL_NUM as varchar(11))as ins_no,
+                            t1.MON_STAT,
+                            date(t1.INSTALL_DATE) as inst_date 		
+                     into ##datos_portfolio_FR
+                     from ods_owner.SRC_SkylabFR_v_PORTFOLIO_LIVE t1
+                     left join ods_owner.fr_ma_installations t2        
+                            on (t1.S#INS= t2.s#ins)
+                     where date(PORTFOLIO_DATE)  = date(date_fecha_portf_in)-1
+                            and STACK_TYPE='IN'
+                            and PERIMETER ='VERISURE - SOUTH'
+                            and t1.PANEL in ('SDVECUW','SDVECU','SDVFAST','SDVFSW');  
+                     
+                     message 'NO HAY DATOS CARGADOS DEL MES PASADO EN MT REPORTS PERO TAMPOCO EN SKYLAB SNAPSHOT, SE CARGA DE SKYLAB LIVE CON FECHA 1 DIA MENOS DE LA INTRODUCIDA '  type info to client;  
+
+                     message 'PORTFOLIO DIA ' ||var_country_name ||' '|| getdate() || ' -> Proceso OK ' type info to client;  
+
+              ELSE
+
+                     set var_anio_FR = var_anio;
+                     set var_mes_FR = var_mes;
+                     select cast((cast(var_anio as varchar(6))||'/'||var_mes_char||'/01' ) as date) into var_primer_dia_mes;   
+
+                     -- ** PORTFOLIO FRANCE MES
+                     select distinct var_anio_mes,
+                            var_count_iso3 as K_Country,
+                            t1.PANEL,
+                            t1.CUSTOMER_TYPE_FROM_CTR_TP,
+                            SUBSTRING(t2.sub_exptp,2,1) as sub_tp,            -- sub_tp propio -> convertir
+                            'S'as Platform, 
+                            cast(t1.INSTALL_NUM as varchar(11))as ins_no,
+                            t1.MON_STAT,
+                            date(t1.INSTALL_DATE) as inst_date      
+                     into ##datos_portfolio_FR
+                     from ods_owner.SRC_SkylabFR_v_PORTFOLIO_SNAPSHOT t1
+                     left join ods_owner.fr_ma_installations t2        
+                            on (t1.S#INS= t2.s#ins)
+                     where CLOSING_PERIOD = var_anio_mes_fr
+                            and STACK_TYPE='IN'
+                            and PERIMETER ='VERISURE - SOUTH'
+                            and t1.PANEL in ('SDVECUW','SDVECU','SDVFAST','SDVFSW');  
+
+                    
+                     message 'NO HAY DATOS CARGADOS DEL MES PASADO EN MT REPORTS PERO SI EN SKYLAB SNAPSHOT, SE CARGA DE SKYLAB SANPSHOT CON CLOSING PERIOD: ' || var_anio_mes_fr type info to client;  
+                     message 'PORTFOLIO MES ' ||var_country_name ||' '|| getdate() || ' -> Proceso OK ' type info to client;      
+
+              END IF;  
+       END IF;
+
+ELSE   -- ** PORTFOLIOS PROPIOS ** --
+
+       select case when var_mes <10 then '0'|| cast(var_mes as varchar(1))
+              else cast(var_mes as varchar(2))
+              end into var_mes_char;              
+
+       select cast(var_anio as varchar(6))||var_mes_char into var_anio_mes;       
+       select cast((cast(var_anio as varchar(6))||'/'||var_mes_char||'/01' ) as date) into var_primer_dia_mes;    
+
+       select id_fecha into id_fecha_primer_dia_mes
+       from ods_owner.D_FECHA
+       where date(fecha) = date(var_primer_dia_mes);
+       message 'PERIODO DE CÁLCULO '||var_country_name||' : '||var_primer_dia_mes type info to client;
+
+       IF var_country_name='ESPAÑA' THEN
+
+              select count()
+              into num_ins_tratar
+              from ods_owner.FACT_PORTFOLIO t1
+              where id_fecha_real = id_fecha_primer_dia_mes;
+
+
+              IF num_ins_tratar <> 0 THEN          -- * MES ESPAÑA * 
+
+                     select distinct var_anio_mes,
+                            var_count_iso3 as K_Country,
+                            t1.panel,
+                            t3.text,
+                            t3.sub_tp,
+                            'S'as Platform, 
+                            t2.ins_no, 
+                            t1.mon_stat,
+                            date(t2.ins_dt) as inst_date
+                     into ##datos_portfolio
+                     from ods_owner.FACT_PORTFOLIO t1
+                     left join ods_owner.D_INSTALACION_INT t2
+                            on (t1.s#ins = t2.s#ins 
+                            and t2.id_country =nid_country)
+                     left join ods_owner.D_CLIENT_TYPE t3
+                            on (t1.id_cod_tipo_cli = t3.id_cod 
+                            and t3.id_country=nid_country)
+                     where t1.id_fecha_real = id_fecha_primer_dia_mes
+                            and Monitored ='S' and Invoiced= 'S'
+                            and t3.id_country=nid_country and t3.sub_tp in ('N/A','10','11','12','13','14','15','16','17','18','19','20','21')
+                            and t1.panel in ('SDVECUW','SDVECU','SDVFAST', 'SDVFSW');
+                   
+
+
+                     message 'PORTFOLIO MES ' ||var_country_name ||' '|| getdate() || ' -> Proceso OK ' type info to client; -- ESPAÑA
+            
+
+                     
+              ELSE          -- * DIARIO ESPAÑA *
+                     select distinct var_anio_mes,
+                            var_count_iso3 as K_Country,
+                            t1.panel,
+                            t3.text,
+                            t3.sub_tp,
+                            'S'as Platform, 
+                            t2.ins_no, 
+                            t1.mon_stat,
+                            date(t2.ins_dt) as inst_date
+                     into ##datos_portfolio
+                     from ods_owner.FACT_PORTFOLIO_DAY t1
+                     left join ods_owner.D_INSTALACION_INT t2
+                            on (t1.s#ins = t2.s#ins 
+                            and t2.id_country =nid_country)
+                     left join ods_owner.D_CLIENT_TYPE t3
+                            on (t1.id_cod_tipo_cli = t3.id_cod 
+                            and t3.id_country=nid_country)
+                     where  Monitored ='S' and Invoiced= 'S'
+                            and t3.id_country=nid_country and t3.sub_tp in ('N/A','10','11','12','13','14','15','16','17','18','19','20','21')
+                            and t1.panel in ('SDVECUW','SDVECU','SDVFAST', 'SDVFSW');
+
+
+                     message 'PORTFOLIO DIA ' ||var_country_name ||' '|| getdate() || ' -> Proceso OK ' type info to client; 
+
+              END IF; -- ** ESPAÑA        
+
+       ELSE   -- ** MCA
+              select count()
+              into num_ins_tratar
+              from ods_owner.FACT_PORTFOLIO_MCA t1
+              where id_fecha_real = id_fecha_primer_dia_mes
+                     and id_country = nid_country;
+              
+              message 'id_fecha_primer_dia_mes (01 de var mes):' ||id_fecha_primer_dia_mes type info to client;
+              message 'Numero de instalaciones en fact_portfolio_mca para id_fecha_primer_dia_mes (num_ins_tratar):' ||num_ins_tratar type info to client;
+
+              IF num_ins_tratar <> 0 THEN          -- * MES MCA * 
+
+                     select distinct var_anio_mes,
+                            var_count_iso3 as K_Country,
+                            t1.panel,
+                            t3.text,
+                            t3.sub_tp,
+                            'S'as Platform, 
+                            t2.ins_no, 
+                            t1.mon_stat,
+                            date(t2.ins_dt) as inst_date
+                     into ##datos_portfolio
+                     from ods_owner.FACT_PORTFOLIO_MCA t1
+                     left join ods_owner.D_INSTALACION_INT t2
+                            on (t1.s#ins = t2.s#ins 
+                            and t2.id_country =nid_country)
+                     left join ods_owner.D_CLIENT_TYPE t3
+                            on (t1.id_cod_tipo_cli = t3.id_cod 
+                            and t3.id_country=nid_country)
+                     where t1.id_country =nid_country
+                            and t1.id_fecha_real = id_fecha_primer_dia_mes
+                            and Monitored ='S' and Invoiced= 'S'
+                            and (t3.sub_tp in ('N/A','10','11','12','13','14','15','16','17','18','19','20','21') or t3.sub_tp is NULL)
+                            and t1.panel in ('SDVECUW','SDVECU','SDVFAST', 'SDVFSW');
+
+                     message 'como num_ins_tratar <> 0 se recogen datos para ##datosportfolio de fact_portfolio_mca para id_fecha_primer_dia_mes' type info to client;
+                     message 'PORTFOLIO MES ' ||var_country_name ||' '|| getdate() || ' -> Proceso OK ' type info to client; 
+                
+
+              ELSE          -- * DIARIO MCA *
+
+                     select distinct var_anio_mes,
+                            var_count_iso3 as K_Country,
+                            t1.panel,
+                            t3.text,
+                            t3.sub_tp,
+                            'S'as Platform, 
+                            t2.ins_no, 
+                            t1.mon_stat,
+                            date(t2.ins_dt) as inst_date
+                     into ##datos_portfolio
+                     from ods_owner.FACT_PORTFOLIO_MCA_DAY t1
+                     left join ods_owner.D_INSTALACION_INT t2
+                            on (t1.s#ins = t2.s#ins 
+                            and t2.id_country =nid_country)
+                     left join ods_owner.D_CLIENT_TYPE t3
+                            on (t1.id_cod_tipo_cli = t3.id_cod 
+                            and t3.id_country=nid_country)
+                     where t1.id_country =nid_country
+                            and Monitored ='S' and Invoiced= 'S'
+                            and (t3.sub_tp in ('N/A','10','11','12','13','14','15','16','17','18','19','20','21') or t3.sub_tp is NULL)
+                            and t1.panel in ('SDVECUW','SDVECU','SDVFAST', 'SDVFSW');
+                     
+                     
+                     message 'como num_ins_tratar = 0 se recogen datos para ##datosportfolio de fact_portfolio_mca_DAY' type info to client;
+                     message 'FILAS TRATADAS EN PORTFOLIO MCA ' || var_country_name || ' :' || @@rowcount type info to client;
+                     message 'PORTFOLIO DIA ' ||var_country_name ||' '|| getdate() || ' -> Proceso OK ' type info to client; 	              
+
+              END IF;                     
+       END IF;            
+END IF;  -- * PORTFOLIOS          
+
+
+message 'FILAS TRATADAS EN PORTFOLIO ' || var_country_name || ' :' || @@rowcount type info to client;
+message '====================================== FIN PORTFOLIO ======================================'  type info to client;
+
+message '====================================== 590 ======================================'  type info to client;
+
+-- ** COMIENZO 590 **
+
+IF var_country_name<>'ITALIA' and var_country_name<>'FRANCE' THEN
+       -- Nos quedamos con la última foto de ambos 590
+
+       -- MENSUAL
+       CASE WHEN var_country_name='ESPAÑA' THEN 
+              set @TABLE_590 = 'ods_owner.M_590';                       
+       WHEN var_country_name='ARGENTINA' THEN
+              set @TABLE_590 = 'ods_owner.ar_m_590';
+       WHEN var_country_name='UK' THEN
+              set @TABLE_590 = 'ods_owner.SRC_GINFOSINCROGB_UK_M_590';  
+       WHEN var_country_name='IRELAND' THEN
+              set @TABLE_590 = 'ods_owner.SRC_GINFOSINCROIE_IE_M_590';                
+       WHEN var_country_name='CHILE' THEN
+              set @TABLE_590 = 'ods_owner.ch_m_590';                    
+       WHEN var_country_name='PERU' THEN
+              set @TABLE_590 = 'ods_owner.pe_m_590 ';                   
+       WHEN var_country_name='PORTUGAL' THEN
+              set @TABLE_590 = 'ods_owner.pt_m_590 ';
+       WHEN var_country_name='BRASIL' THEN
+              set @TABLE_590 = 'ods_owner.br_m_590 '
+       END;     
+  
+       select datediff(dd,'1980/01/01',var_primer_dia_mes) into var_nfecha_primer_dia; --el 1 de var_mes
+
+       set @QUERY = 'select count() into num_reg_mes';
+       set @QUERY = @QUERY + ' from '+@TABLE_590 ;
+       set @QUERY = @QUERY + ' where nfecha = '+cast(var_nfecha_primer_dia as varchar(20)) + ';';       
+
+       execute(@QUERY);     
+
+       -- query completa
+       /* select count() into num_reg_mes
+       from ods_owner.M_590
+       where nfecha = var_nfecha_primer_dia;*/   
+
+       message 'var_nfecha_primer_dia es el dia 1 de var_mes ' || var_nfecha_primer_dia type info to client;
+       message 'num_reg_mes cantidad de datos en m590 para var_nfecha_primer_dia ' || num_reg_mes type info to client;    
+
+       --IF var_max_fecha_590_m IS NOT NULL THEN
+       IF num_reg_mes <> 0 THEN
+
+              set @QUERY = 'select nfecha,ins_no,item_ct';
+              set @QUERY = @QUERY + ' into ##tabla_m_590';
+              --set @QUERY = @QUERY + ' into ods_owner.tabla_m_590';
+              set @QUERY = @QUERY + ' from '+@TABLE_590 ;
+              set @QUERY = @QUERY + ' where nfecha = '+cast(var_nfecha_primer_dia as varchar(20)) + ';';
+              
+              execute(@QUERY);     
+                
+              message 'num_reg_mes no es 0, metemos en ##m590 las de m590 con var_nfecha_primer_dia ' || num_reg_mes type info to client;    
+
+
+              -- query completa
+              /*select nfecha,ins_no,item_ct
+              into ##tabla_m_590
+              from ods_owner.M_590
+              where nfecha = var_nfecha_primer_dia;*/       
+       END IF;
+
+       -- DIARIA
+       CASE WHEN var_country_name='ESPAÑA' THEN 
+              set @TABLE_590 = 'ods_owner.H_590';
+       WHEN var_country_name='ARGENTINA' THEN
+              set @TABLE_590 = 'ods_owner.ar_h_590';
+       WHEN var_country_name='UK' THEN
+              set @TABLE_590 = 'ods_owner.SRC_GINFOSINCROGB_UK_H_590 ';
+	WHEN var_country_name='IRELAND' THEN
+              set @TABLE_590 = 'ods_owner.SRC_GINFOSINCROIE_IE_H_590 ';              
+       WHEN var_country_name='CHILE' THEN
+              set @TABLE_590 = 'ods_owner.ch_h_590 ';
+       WHEN var_country_name='PERU' THEN
+              set @TABLE_590 = 'ods_owner.pe_h_590 ';              
+       WHEN var_country_name='PORTUGAL' THEN
+              set @TABLE_590 = 'ods_owner.pt_h_590 ';
+       WHEN var_country_name='BRASIL' THEN
+              set @TABLE_590 = 'ods_owner.br_h_590 ';
+       END;        
+  
+       /*set @QUERY = 'select max(nfecha) into var_max_fecha_590_d';
+       set @QUERY = @QUERY + ' from '+@TABLE_590 ;
+
+       execute(@QUERY);     */
+
+       -- query completa
+       /*select max(nfecha) into var_max_fecha_590_d
+       from ods_owner.H_590;*/       
+
+       set @QUERY = 'select nfecha,ins_no,item_ct';
+       set @QUERY = @QUERY + ' into ##tabla_h_590';
+       --set @QUERY = @QUERY + ' into ods_owner.tabla_h_590';
+       set @QUERY = @QUERY + ' from '+@TABLE_590 ;
+       set @QUERY = @QUERY + ' where nfecha = '+cast(var_nfecha_primer_dia as varchar(20)) + ';';
+       
+       execute(@QUERY);     
+
+       --select nfecha,ins_no,item_ct
+       --into ##tabla_h_590
+       --from ods_owner.H_590
+       --where nfecha = var_nfecha_primer_dia
+
+       -- query completa
+       /*select nfecha,ins_no,item_ct
+       into ##tabla_h_590
+       from ods_owner.H_590
+       where nfecha = var_nfecha_primer_dia;
+       */             
+    
+       message 'metemos h590 en ##h590 con var_nfecha_primer_dia' type info to client;    
+
+
+       --IF  var_max_fecha_590_m is NULL THEN     -- Estamos en Cierre. M vacía -> vamos a las H.
+       IF num_reg_mes = 0 THEN      -- Estamos en Cierre. M vacía -> vamos a las H.
+              select nfecha,ins_no,item_ct
+              into ##total_590              
+              from ##tabla_h_590;  
+            
+              
+              message 'num_reg_mes es 0, M esta vacia, metemos ##h590 en ##total590'  type info to client;    
+              message 'Cierre 590 ' ||var_country_name ||' '|| getdate() || ' -> Proceso OK ' type info to client;
+
+       ELSE
+              --UNION MES+DIA
+              select a.nfecha,a.ins_no,a.item_ct
+              into ##total_590
+              from (select nfecha,ins_no,item_ct
+              from ##tabla_m_590
+              union
+              select nfecha,ins_no,item_ct
+              from ##tabla_h_590) a;
+ 
+              message 'num_reg_mes no es 0, unimos ##m590 y ##h590 en ##total590' || num_reg_mes type info to client;    
+      
+       END IF;
+
+       select dateadd(dd,nfecha,'1980/01/01') as fecha_ini,ins_no ,sum(item_ct/100)
+       into ##ins_posit
+       from ##total_590
+       where date(fecha_ini) = var_primer_dia_mes
+       group by fecha_ini,ins_no 
+       having sum(item_ct/100)>0;
+
+       select distinct(ins_no)
+       into ##ins_590
+       from ##ins_posit;       
+
+       message 'Cálculo total 590 ' ||var_country_name ||' '|| getdate() || ' -> Proceso OK ' type info to client;
+END IF;
+
+message 'FILAS 590 TRATADAS ' || var_country_name || ' :' || @@rowcount type info to client;
+-- ** FIN 590 **
+
+-- ** Tipo Cliente
+IF var_country_name='ITALIA' THEN 
+
+       IF num_reg_mes_cargado <> 0 THEN -- hay datos ya cargados - > CARGA DIARIA
+
+              --590
+              select distinct(ins_no)
+              into ##ins_590
+              from ##datos_portfolio_IT
+              where mese_ingresso = var_mes
+                    and anno_ingresso = var_anio;        
+
+              select t1.ins_no,
+                     var_anio_mes,
+                     K_Country,
+                     case when t2.ins_no is not null then 1           -- new
+                            else 2 end as K_PortfolioStatus,
+                     case when right((trim(price_list_def)),3) = 'CIT' then 1      -- Residencial
+                            when right((trim(price_list_def)),3) = 'BIT' then 2    -- Business
+                            else -1 end as K_CustomerType,
+                     case when t1.panel in ('SDVECUW','SDVECU') then 3              -- Moonshot
+                            when t1.panel in ('SDVFAST', 'SDVFSW') then 11          -- No Moonshot
+                            else -1 end as k_GWGeneration,
+                     case when t1.sub_tp is null or isnumeric(t1.sub_tp) = 0 then -1 
+                            else cast (t1.sub_tp as int) end as K_InstSubtype,
+                     Platform,
+                     mon_stat,
+                     panel,
+                     date(t1.inst_date) as inst_date,
+                     quantita
+              into ##New_Ins_Aux 
+              from ##datos_portfolio_IT t1
+              left join ##ins_590 t2
+                     on (t1.ins_no = t2.ins_no
+                         and t1.mese_ingresso = var_mes
+                         and t1.anno_ingresso = var_anio);
+              message 'TIPO CLIENTE: num_reg_mes_cargado no es 0, (hay datos en MT reports para report period =  ' ||var_anio_mes|| 'cargas var mes y  var anio de ## datos portfolio en new ins aux' type info to client;
+
+       ELSE                                                    
+              IF num_reg_ITA = 0 THEN                   -- No hay datos del mes pasado en ITA. CARGA DIARIA mes actual
+
+                     --590
+                     select distinct(ins_no)
+                     into ##ins_590
+                     from ##datos_portfolio_IT
+                     where mese_ingresso = var_mes
+                     and anno_ingresso = var_anio;        
+
+                     select t1.ins_no,
+                            var_anio_mes,
+                            K_Country,
+                            case when t2.ins_no is not null then 1           -- new
+                                   else 2 end as K_PortfolioStatus,
+                            case when right((trim(price_list_def)),3) = 'CIT' then 1      -- Residencial
+                                   when right((trim(price_list_def)),3) = 'BIT' then 2    -- Business
+                                   else -1 end as K_CustomerType,
+                            case when t1.panel in ('SDVECUW','SDVECU') then 3              -- Moonshot
+                                   when t1.panel in ('SDVFAST', 'SDVFSW') then 11          -- No Moonshot
+                                   else -1 end as k_GWGeneration,
+                            case when t1.sub_tp is null or isnumeric(t1.sub_tp) = 0 then -1 
+                                   else cast (t1.sub_tp as int) end as K_InstSubtype,
+                            Platform,
+                            mon_stat,
+                            panel,
+                            date(t1.inst_date) as inst_date,
+                            quantita
+                     into ##New_Ins_Aux 
+                     from ##datos_portfolio_IT t1
+                     left join ##ins_590 t2
+                            on (t1.ins_no = t2.ins_no
+                            and t1.mese_ingresso = var_mes
+                            and t1.anno_ingresso = var_anio);
+              
+              message 'No hay datos del mes pasado en MT reports ni en ITA, cargas var mes y  var anio de ##datos portfolio en new ins aux' ||var_anio_mes type info to client;
+
+
+              ELSE                                       -- Hay datos del mes pasado en ITA. Carga MESUAL
+
+                     --590
+                     select distinct(ins_no)
+                     into ##ins_590
+                     from ##datos_portfolio_IT t1
+                     where t1.tipo = 'VENDITA' and month(t1.dt_ins_record) = month_h and year(t1.dt_ins_record) = year_h;
+
+                     select t1.ins_no,
+                            var_anio_mes,
+                            K_Country,
+                            case when t2.ins_no is not null then 1           -- new
+                                   else 2 end as K_PortfolioStatus,
+                            case when right((trim(price_list_def)),3) = 'CIT' then 1      -- Residencial
+                                   when right((trim(price_list_def)),3) = 'BIT' then 2    -- Business
+                                   else -1 end as K_CustomerType,
+                            case when t1.panel in ('SDVECUW','SDVECU') then 3              -- Moonshot
+                                   when t1.panel in ('SDVFAST', 'SDVFSW') then 11          -- No Moonshot
+                                   else -1 end as k_GWGeneration,
+                            case when t1.sub_tp is null or isnumeric(t1.sub_tp) = 0 then -1 
+                                   else cast (t1.sub_tp as int) end as K_InstSubtype,
+                            Platform,
+                            mon_stat,
+                            panel,
+                            date(t1.inst_date) as inst_date,
+                            quantita
+                     into ##New_Ins_Aux 
+                     from ##datos_portfolio_IT t1
+                     left join ##ins_590 t2
+                            on (t1.ins_no = t2.ins_no
+                            and t1.tipo = 'VENDITA' and month(t1.dt_ins_record) = var_mes and year(t1.dt_ins_record) = var_anio);
+                    
+                     message 'No hay datos del mes pasado en MT reports, si en ITA, cargas de ## datos portfolio var mes y var anio' ||var_anio_mes type info to client;
+
+              END IF;
+       END IF;
+
+ELSEIF var_country_name='FRANCE' THEN
+
+       -- Cálculo del 590 para FRANCE
+       select ins_no,inst_date
+       into ##ins_590
+       from ##datos_portfolio_FR t1
+       where year(inst_date) = var_anio_FR
+              and month(inst_date) = var_mes_FR;
+
+       select t1.ins_no,
+              var_anio_mes,
+              K_Country,
+              case when t2.ins_no is not null then 1           -- new
+                     else 2 end as K_PortfolioStatus,
+              case when t1.CUSTOMER_TYPE_FROM_CTR_TP = 'RESI' then 1  -- Residencial
+                     when  t1.CUSTOMER_TYPE_FROM_CTR_TP = 'BUSI' then 2       -- Business
+                     else -1 end as K_CustomerType,
+              case when t1.panel in ('SDVECUW','SDVECU') then 3        -- Moonshot
+                     when t1.panel in ('SDVFAST', 'SDVFSW') then 11    -- No Moonshot
+                     else -1 end as k_GWGeneration,
+              case when t1.sub_tp = 'A' then 12
+                     when t1.sub_tp = 'B' then 13
+                     when t1.sub_tp = 'C' then 19
+                     when t1.sub_tp = 'G' then 16
+                     when t1.sub_tp = 'M' then 12
+                     when t1.sub_tp = 'P' then 11
+                     when t1.sub_tp = 'S' then 11
+                     when t1.sub_tp = 'T' then 17
+                     when t1.sub_tp = 'Z' then 14
+                     when t1.sub_tp = '0' then 13
+              else -1
+              end as K_InstSubtype,
+              Platform,
+              mon_stat,
+              panel,
+              t1.inst_date,
+              0 as quantita
+       into ##New_Ins_Aux   
+       from ##datos_portfolio_FR t1
+       left join ##ins_590 t2
+              on (t1.ins_no = t2.ins_no); 
+
+ELSE   -- MCA- España
+
+       SELECT * FROM ##datos_portfolio;
+
+       select t1.ins_no,
+              var_anio_mes,
+              K_Country,
+              case when t2.ins_no is not null then 1           -- new
+                     else 2 end as K_PortfolioStatus,
+              case when substring(trim(text),1,1) in ('P','C') then 1  -- Residencial
+                     when substring(trim(text),1,1) = 'N' then 2       -- Business
+                     else -1 end as K_CustomerType,
+              case when t1.panel in ('SDVECUW','SDVECU') then 3        -- Moonshot
+                     when t1.panel in ('SDVFAST', 'SDVFSW') then 11    -- No Moonshot
+                     else -1 end as k_GWGeneration,
+              case when t1.sub_tp is null or isnumeric(t1.sub_tp) = 0 then -1 
+                     else cast (t1.sub_tp as int) end as K_InstSubtype,
+              Platform,
+              mon_stat,
+              panel,
+              t1.inst_date,
+              0 as quantita
+       into ##New_Ins_Aux   
+       from ##datos_portfolio t1
+       left join ##ins_590 t2
+              on (t1.ins_no = t2.ins_no); 
+END IF;
+
+insert into ##New_Ins (ins_no,var_anio_mes,K_Country,K_PortfolioStatus,K_CustomerType,k_GWGeneration,K_InstSubtype,Platform,mon_stat,panel,inst_date,quantita)
+select ins_no,var_anio_mes,K_Country,K_PortfolioStatus,K_CustomerType,k_GWGeneration,K_InstSubtype,Platform,mon_stat,panel,inst_date,quantita
+from ##New_Ins_Aux;
+
+-- Meses antigüedad hasta cierre
+select t1.*,
+       cast(var_anio_mes as int) as ReportPeriod,
+       datediff(mm,inst_date,date(var_primer_dia_mes)) as difer_month
+into ##ins_dif_month
+from ##New_Ins t1;
+
+select t1.*,
+       t2.PK_Inst_Cohort as key_cohort
+into ##key_month
+from ##ins_dif_month t1
+left join ods_owner.D_GROUP_INSTALLATION_COHORT t2
+       on t1.difer_month between t2.AgeMonthsFrom and t2.AgeMonthsTo;
+
+-- para los valores superiores a 24m será 25 siempre.
+select t1.*, 
+       case when key_cohort is null then 25 else key_cohort end K_Inst_Cohort
+into ##portfolio_daterep
+from ##key_month t1;
+
+select t1.*,
+       cast(ReportPeriod as varchar(6) )||'-'||
+       K_Country||'-'||
+       cast(K_PortfolioStatus as varchar(2) )||'-'||
+       cast(K_CustomerType as varchar(2) )||'-'||
+       cast(k_GWGeneration as varchar(2) )||'-'||
+       cast(K_InstSubtype as varchar(2) )||'-'||
+       cast(K_Inst_Cohort as varchar(2) )||'-'||
+       Platform as PK_FI
+into ##portfolio_deta
+from ##portfolio_daterep t1; 
+
+-- ** Número Instalaciones
+IF var_country_name='ITALIA' THEN
+       select PK_FI,
+              ReportPeriod,	
+              K_Country,
+              K_PortfolioStatus,
+              K_CustomerType,
+              k_GWGeneration,
+              K_InstSubtype,
+              K_Inst_Cohort,
+              Platform,       
+              sum(quantita) as NumberOfInstallations
+       into ##final_Inst_Portfolio
+       from ##portfolio_deta
+       group by PK_FI,
+              ReportPeriod,	
+              K_Country,
+              K_PortfolioStatus,
+              K_CustomerType,
+              k_GWGeneration,
+              K_InstSubtype,
+              K_Inst_Cohort,
+              Platform;
+ELSE
+       select PK_FI,
+              ReportPeriod,	
+              K_Country,
+              K_PortfolioStatus,
+              K_CustomerType,
+              k_GWGeneration,
+              K_InstSubtype,
+              K_Inst_Cohort,
+              Platform,       
+              count() as NumberOfInstallations
+       into ##final_Inst_Portfolio
+       from ##portfolio_deta
+       group by PK_FI,
+              ReportPeriod,	
+              K_Country,
+              K_PortfolioStatus,
+              K_CustomerType,
+              k_GWGeneration,
+              K_InstSubtype,
+              K_Inst_Cohort,
+              Platform;
+END IF;
+
+--select cast(var_anio_mes as int) into var_reportPeriod;
+
+select max(ReportPeriod)
+into var_reportPeriod
+from ##final_Inst_Portfolio;
+
+
+call SP_ODS_CONTROL_TABLE_LOCK('FACT_GROUP_INSTALLATIONS_IN_PORTFOLIO_S','SP_ODS_FACT_INSTALLATIONS_DEVICES_S','LOCK');
+   delete from ods_owner.FACT_GROUP_INSTALLATIONS_IN_PORTFOLIO_S t1
+   where t1.ReportPeriod= var_reportPeriod
+          and t1.K_Country=var_count_iso3;     
+   commit;         
+   
+   message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Borrados FACT_GROUP_INSTALLATIONS_IN_PORTFOLIO_S.' type info to client;
+   
+   insert into ods_owner.FACT_GROUP_INSTALLATIONS_IN_PORTFOLIO_S 
+          (PK_FI,ReportPeriod,K_Country,K_PortfolioStatus,K_CustomerType,k_GWGeneration,K_InstSubtype,NumberOfInstallations,Platform,ReportDateTime,K_Inst_Cohort)
+   select PK_FI,ReportPeriod, K_Country, K_PortfolioStatus, K_CustomerType, k_GWGeneration, K_InstSubtype, NumberOfInstallations, Platform, getdate(),K_Inst_Cohort
+   from ##final_Inst_Portfolio;
+   commit;
+   
+   message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Insertados FACT_GROUP_INSTALLATIONS_IN_PORTFOLIO_S.Periodo ' ||var_reportPeriod type info to client;
+call SP_ODS_CONTROL_TABLE_LOCK('FACT_GROUP_INSTALLATIONS_IN_PORTFOLIO_S','SP_ODS_FACT_INSTALLATIONS_DEVICES_S','UNLOCK');
+
+message '======================================  FIN 590 ======================================'  type info to client;
+
+-- ** ***************************************************************************************
+-- **                                            DEVICES
+-- ** ***************************************************************************************
+
+message  ' ================================== DEVICES ======================================= '  type info to client;
+
+-- Recuperamos Detectores por la fecha de entrada
+select id_fecha into var_fecha_device
+from ods_owner.D_FECHA
+where date(Fecha) = date(date_fecha_portf_in)-1;
+
+message  ' UNIMOS PORTFOLIO CON INFO DE D_INSTALACION_INT '  type info to client;
+
+IF var_country_name<>'FRANCE' THEN
+
+       select t1.*,
+              t2.s#ins
+       into ##inst_oper
+       from ##portfolio_deta t1
+       left join ods_owner.D_INSTALACION_INT t2
+              on (t1.ins_no = t2.ins_no
+                     and t2.id_country=nid_country)
+       where t1.mon_stat in ('OP','EDOC');
+
+ELSE
+
+       select t1.*,
+              t2.s#ins
+       into ##inst_oper
+       from ##portfolio_deta t1
+       left join ods_owner.D_INSTALACION_INT t2
+              on (t1.ins_no = t2.ins_no
+                     and t2.id_country=nid_country)
+       where t1.mon_stat in ('ACTI', 'SUSP', '1TST');
+
+ENDIF;
+
+select t2.PK_FI,t2.s#ins,t2.panel,t2.mon_stat,t1.Zone,t1.Miscno1,t1.sertp, ' ' as ic_identif,t1.id_country, t1.SalesType_cod, t1.version_placa
+into ##datos_devices_tot
+from ods_owner.FACT_DETECTORES_VERISURE t1
+inner join ##inst_oper t2
+   on (t1.s#ins= t2.s#ins)
+where id_fecha = var_fecha_device
+   and id_country = nid_country;
+
+message  ' COGEMOS DEVICES DE FACT DETECTORES VERISURE, UN DIA ANTES DE LA FECHA INTRODUCIDA (VAR_FECHA_DEVICE): ' || var_fecha_device type info to client;
+
+IF var_country_name='ESPAÑA' THEN
+    select s#ins, sertp, ic_identif into ##installed_components1 from ma_installed_components where sertp = 27 and ic_identif = '2' group by s#ins, sertp, ic_identif;
+
+    UPDATE ##datos_devices_tot
+    SET    T1.ic_identif = T2.ic_identif
+    FROM   ##datos_devices_tot T1
+       JOIN ##installed_components1 T2
+         ON T1.s#ins = T2.s#ins
+         AND T1.sertp = T2.sertp
+        WHERE id_country = nid_country;
+
+ELSEIF var_country_name='FRANCE' THEN
+    select s#ins, sertp, ic_identif into ##installed_components1 from fr_ma_installed_components where sertp = 27 and ic_identif = '2' group by s#ins, sertp, ic_identif;
+
+    UPDATE ##datos_devices_tot
+    SET    T1.ic_identif = T2.ic_identif
+    FROM   ##datos_devices_tot T1
+       JOIN ##installed_components1 T2
+         ON T1.s#ins = T2.s#ins
+         AND T1.sertp = T2.sertp
+        WHERE id_country = nid_country;
+
+ELSEIF var_country_name='PORTUGAL' THEN
+    select s#ins, sertp, ic_identif into ##installed_components1 from pt_ma_installed_components where sertp = 27 and ic_identif = '2' group by s#ins, sertp, ic_identif;
+
+    UPDATE ##datos_devices_tot
+    SET    T1.ic_identif = T2.ic_identif
+    FROM   ##datos_devices_tot T1
+       JOIN ##installed_components1 T2
+         ON T1.s#ins = T2.s#ins
+         AND T1.sertp = T2.sertp
+        WHERE id_country = nid_country;
+
+ELSEIF var_country_name='UK' THEN
+    select s#ins, sertp, ic_identif into ##installed_components1 from uk_ma_installed_components where sertp = 27 and ic_identif = '2' group by s#ins, sertp, ic_identif;
+
+    UPDATE ##datos_devices_tot
+    SET    T1.ic_identif = T2.ic_identif
+    FROM   ##datos_devices_tot T1
+       JOIN ##installed_components1 T2
+         ON T1.s#ins = T2.s#ins
+         AND T1.sertp = T2.sertp
+        WHERE id_country = nid_country;
+ENDIF;
+
+select PK_FI,s#ins,panel,mon_stat, ic_identif,
+      substring(Zone,1,2) as disp, 
+      right(trim(Miscno1),2) as disp_misc1,
+      Zone,
+      sertp, SalesType_cod, version_placa
+into ##dispo_zone_aux
+from ##datos_devices_tot;
+
+message  ' UPDATE IC_IDENTIF FROM INSTALLED COMPONENTS '  type info to client;
+
+ -- Quitamos varias zonas no necesarias
+delete from ##dispo_zone_aux
+where disp in ('KP','RC','OS','IR','SR');
+
+ -- Se identifican los disp
+select t1.*,
+       case when disp ='MG' and panel in ('SDVFAST','SDVFSW') then
+            case when disp_misc1 = 'H4' then -2 
+                 when disp_misc1 <> 'H4' and disp_misc1 <> 'H6' then -3
+                 when disp_misc1 ='H6' then -65 end
+            when disp ='MC' and panel in ('SDVFAST','SDVFSW') then
+                 case when disp_misc1='H4' then -4 
+                     when disp_misc1 <>'H4' then -5  
+                     when disp_misc1 ='H6' then -66 end
+            when disp ='VR' and panel in ('SDVFAST','SDVFSW') then -6 
+            when disp ='MP' and panel in ('SDVFAST','SDVFSW') then -7 
+	     when disp ='XR' and panel in ('SDVFAST','SDVFSW') then -8	   
+	     when disp ='YR' and panel in ('SDVFAST','SDVFSW') then -9	   	   
+	     when disp ='XP' and panel in ('SDVFAST','SDVFSW') then -10            
+            when disp ='YP' and panel in ('SDVFAST','SDVFSW') then -11	   
+            when disp ='MG' and panel in ('SDVECU','SDVECUW') then -12	   
+            when disp ='YR' and panel in ('SDVECU','SDVECUW') then -13	 	   
+            when disp ='QR' and panel in ('SDVECU','SDVECUW') then -14
+            when disp ='YP' and panel in ('SDVECU','SDVECUW') then -15
+            when disp ='QP' and panel in ('SDVECU','SDVECUW') then -16
+            when disp ='VA' and sertp =50 then -17
+            when disp ='VA' and sertp =51 then -18
+            when disp ='VI' and panel in ('SDVFAST','SDVFSW') then -19
+            when disp ='VI' and panel in ('SDVECU','SDVECUW') then -20
+            when disp ='DR' and panel in ('SDVFAST','SDVFSW') then -21
+            when disp ='FG' and ic_identif = '2' then -45
+            when disp ='FG' and panel in ('SDVFAST','SDVFSW') then -22
+            when disp ='FG' and panel in ('SDVECU','SDVECUW') then -23
+            when disp ='FR' and panel in ('SDVFAST','SDVFSW') then -24
+            
+            when disp ='WR' and panel in ('SDVFAST','SDVFSW') then -25
+            when disp ='GR' and panel in ('SDVFAST','SDVFSW') then -26
+            when disp ='TI' and panel in ('SDVFAST','SDVFSW') then -27
+            when disp ='TO' and panel in ('SDVFAST','SDVFSW') then -28
+            when disp ='ZR' and panel in ('SDVFAST','SDVFSW') then -29
+            when disp ='B3' and panel in ('SDVFAST','SDVFSW') then -30
+            when disp ='VV' and panel in ('SDVECU','SDVECUW') then -31
+            when disp ='V7' and panel in ('SDVECU','SDVECUW') then -32
+            when disp ='B3' and panel in ('SDVECU','SDVECUW') then -33
+            when disp ='JS' and panel in ('SDVFAST','SDVFSW') then -34
+            when disp ='JX' and panel in ('SDVFAST','SDVFSW') then -35	   
+            when disp ='BT' and panel in ('SDVFAST','SDVFSW') then -36	
+            when disp ='JX' and panel in ('SDVECU','SDVECUW') then -37
+            --when disp ='CE' and panel in ('SDVFAST','SDVFSW') then -38 -- FAST PANEL
+            when disp ='CE' and panel in ('SDVECU','SDVECUW') then -39 --MOONSHOT PANEL
+            when disp ='TG' and panel in ('SDVFAST','SDVFSW') then -40
+            when disp ='TG' and panel in ('SDVECU','SDVECUW') then -41
+            when disp ='KE' and panel in ('SDVFAST','SDVFSW') then -42
+            when disp ='KE' and panel in ('SDVECU','SDVECUW') then -43
+            when disp ='VK' and panel in ('SDVECU','SDVECUW') then -44
+            --when disp ='FX' and panel in ('SDVECU','SDVECUW') then -45
+            when disp ='JZ' and panel in ('SDVECU','SDVECUW') then -46
+            when disp ='JZ' and panel in ('SDVFAST','SDVFSW') then -47	   
+            when disp ='VA' and sertp =52 then -48
+            when disp ='VA' and sertp =53 then -49
+            when disp ='VA' and sertp =58 then -50
+            when disp ='VA' and sertp =59 then -51
+            when disp ='VA' and sertp =66 then -52
+            when disp ='VA' and sertp =67 then -53
+            when disp ='VA' and sertp =68 then -54
+            when disp ='VA' and sertp =70 then -55
+            when disp ='VA' and sertp =71 then -56
+            when disp ='VA' and sertp is null then -57 
+            when disp ='VA' and sertp =72 then -58
+            when disp ='VA' and sertp =73 then -59
+            when disp ='VA' and sertp =76 then -60
+            when disp ='VA' and sertp =77 then -61
+            when disp ='VA' and t1.sertp > 77 and t2.no_device_type  = 'ARLO HUB' then -62 -- añadidos todos los HUB que vengan con sertp > 77
+            when disp ='VA' and t1.sertp > 77 and t2.no_device_type  = 'CAMERA ARLO' then -63 -- añadidos todos los CAMERA que vengan con sertp > 77
+            when disp ='VA' and t1.sertp > 77 and t2.no_device_type  = 'ARLO EXTRA' then -64 -- añadidos todos los EXTRA que vengan con sertp > 77
+            when disp ='FR' and sertp = 79 then -67 -- SMOKE4 
+            when disp ='CE' and panel in ('SDVFAST','SDVFSW') and version_placa like '%FAST %' then -68 --FAST1
+            when disp ='CE' and panel in ('SDVFAST','SDVFSW') and (version_placa like '%FAST2%' or version_placa like '%VF2%') then -69 --FAST2
+            when disp ='CE' and panel in ('SDVFAST','SDVFSW') and version_placa like '%FAST4%' then -70 --FAST4
+            --when  then -38
+            
+    else -1
+    end as K_DeviceType
+into ##disp_PK
+from ##dispo_zone_aux t1
+left join ods_owner.D_DEVICES t2
+	on (t1.sertp = t2.id_device
+	and t2.id_country=nid_country);
+
+message  ' LEFT JOIN CON D_DEVICES '  type info to client;
+
+
+select t1.s#ins,
+      t1.PK_FI as K_FI,
+      t1.K_DeviceType,
+      case when t2.K_GateStage is null then -1 else t2.K_GateStage end as K_GateStage,
+      'S' as Platform,
+      PK_FI||'-'||cast(K_DeviceType as varchar(6)) as PK_FD,
+      t1.zone
+into ##tipo_disp                   
+from ##disp_PK t1
+left join ods_owner.D_GROUP_DEVICE_TYPE_S t2
+      on (t1.K_DeviceType = t2.PK_DeviceType);  
+
+select t1.s#ins,
+      t1.PK_FI as K_FI,
+      t1.K_DeviceType,
+      case when t2.K_GateStage is null then -1 else t2.K_GateStage end as K_GateStage,
+      'S' as Platform,
+      PK_FI||'-'||cast(K_DeviceType as varchar(6))||'-'||cast(SalesType_cod as varchar(5)) as PK_FD,
+      t1.zone,
+      SalesType_cod as K_SalesType
+into ##tipo_disp2                   
+from ##disp_PK t1
+left join ods_owner.D_GROUP_DEVICE_TYPE_S t2
+      on (t1.K_DeviceType = t2.PK_DeviceType); 
+
+select K_FI,
+      K_DeviceType,
+      K_GateStage,
+      Platform,
+      PK_FD,
+      count() as NumberOfDevices,
+      count(distinct s#ins) as NumOfInstPerDeviceType
+into ##finalDevices
+from ##tipo_disp
+group by K_FI,
+      K_DeviceType,
+      K_GateStage,
+      Platform,
+      PK_FD;
+
+select K_FI,
+      K_DeviceType,
+      K_GateStage,
+      K_SalesType,
+      Platform,
+      PK_FD,
+      count() as NumberOfDevices,
+      count(distinct s#ins) as NumOfInstPerDeviceType
+into ##finalDevices2
+from ##tipo_disp2
+group by K_FI,
+      K_DeviceType,
+      K_GateStage,
+      Platform,
+      PK_FD,
+      K_SalesType;
+
+  select count(*) into sales_type_registers from ##finalDevices2 where K_SalesType is not null;
+
+    if sales_type_registers <> 0 then
+
+        delete from ods_owner.FACT_DEVICES_SALES_TYPE_IN_PORTFOLIO_S
+        where CAST(SUBSTRING(K_FI,1,6) as integer)= var_reportPeriod
+         and SUBSTRING(K_FI,8,3) = var_count_iso3;
+        commit;
+
+        message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Borrados FACT_DEVICES_SALES_TYPE_IN_PORTFOLIO_S.' type info to client;
+
+    end if;
+
+  insert into ods_owner.FACT_DEVICES_SALES_TYPE_IN_PORTFOLIO_S 
+         (K_FI,K_DeviceType,K_GateStage,NumberOfDevices,Platform,NumOfInstPerDeviceType,PK_FD, K_SalesType)
+   select K_FI,K_DeviceType,K_GateStage,NumberOfDevices,Platform,NumOfInstPerDeviceType,PK_FD, K_SalesType
+   from ##finalDevices2
+   where K_SalesType is not null;
+   commit;
+   
+   message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Insertados FACT_DEVICES_SALES_TYPE_IN_PORTFOLIO_S. Periodo '||var_reportPeriod type info to client;
+
+
+
+call SP_ODS_CONTROL_TABLE_LOCK('FACT_GROUP_DEVICES_IN_PORTFOLIO_S','SP_ODS_FACT_INSTALLATIONS_DEVICES_S','LOCK');
+   delete from ods_owner.FACT_GROUP_DEVICES_IN_PORTFOLIO_S 
+   where CAST(SUBSTRING(K_FI,1,6) as integer)= var_reportPeriod
+         and SUBSTRING(K_FI,8,3) = var_count_iso3;
+   commit; 
+   
+   message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Borrados FACT_GROUP_DEVICES_IN_PORTFOLIO_S.' type info to client;
+   
+   insert into ods_owner.FACT_GROUP_DEVICES_IN_PORTFOLIO_S 
+         (K_FI,K_DeviceType,K_GateStage,NumberOfDevices,Platform,ReportDateTime,NumOfInstPerDeviceType,PK_FD)
+   select K_FI,K_DeviceType,K_GateStage,NumberOfDevices,Platform,getdate(),NumOfInstPerDeviceType,PK_FD
+   from ##finalDevices;
+   commit;
+   
+   message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Insertados FACT_GROUP_DEVICES_IN_PORTFOLIO_S. Periodo '||var_reportPeriod type info to client;
+call SP_ODS_CONTROL_TABLE_LOCK('FACT_GROUP_DEVICES_IN_PORTFOLIO_S','SP_ODS_FACT_INSTALLATIONS_DEVICES_S','UNLOCK');          
+
+message  ' ==================================  FIN DEVICES ======================================= '  type info to client;
+
+
+-- ** ***************************************************************************************
+-- **                                            ZEROVISION
+-- ** ***************************************************************************************
+
+message  ' ==================================  ZEROVISION ======================================= '  type info to client;
+
+
+IF var_country_name='ESPAÑA' THEN     
+		     
+	--Calculamos tabla previa de Zerovision
+       SELECT OVF.s#ins, count(OVF.zoneid_sfg) NumberofZVDeployments, count(OVF.tm_success_zv_requested) NumberofZVActivations
+       into ##ZV_Deployments
+       FROM ods_owner.fact_nivel1_cra_ovf OVF
+       INNER JOIN ods_owner.fact_nivel1_cra N1 
+              ON (N1.id_cod=OVF.id_cod)
+       INNER JOIN (select * from ods_owner.D_FECHA
+                   where  cast(SUBSTRING(cast(FECHA as varchar),1,4)+(SUBSTRING(cast(FECHA as varchar),6,2)) as int)= var_reportPeriod
+                   ) D_FECHA_CREA_INCI
+              ON (D_FECHA_CREA_INCI.ID_FECHA=N1.id_fecha_crea_inci)
+       group by OVF.s#ins
+       having count(OVF.zoneid_sfg) > 0;
+
+       --Cálculos para Zerovision
+       select t1.s#ins,
+              PK_FD as K_FD,
+              NumberofZVDeployments,
+              NumberofZVActivations,      
+              'S' as Platform,
+              K_DeviceType
+       into ##Ins_zerovision                   
+       from ##tipo_disp t1
+       inner join ##ZV_Deployments t2
+              on (t1.s#ins = t2.s#ins)
+       where K_DeviceType in (-22,-23)
+              ; 
+
+       select K_FD,
+              Platform,
+              sum(NumberofZVDeployments) as NumberofZVDeployments,
+              sum(NumberofZVActivations) as NumberofZVActivations
+       into ##final_zerovision
+       from ##Ins_zerovision
+       group by K_FD,
+              Platform;     
+ELSE   -- MCA
+
+	--Calculamos tabla previa de Zerovision
+       select t1.s#inc,t1.s#ins,t1.id_country
+       into ##incis_mes_zv
+       from ods_owner.fact_nivel1_cra_mca t1 
+       inner join (select * from ods_owner.D_FECHA
+                     where cast(SUBSTRING(cast(FECHA as varchar),1,4)+(SUBSTRING(cast(FECHA as varchar),6,2)) as int)= var_reportPeriod
+                     ) t2
+              on (t2.ID_FECHA = t1.id_fecha_crea_inci)
+       where t1.id_country= nid_country;
+
+       select t1.s#ins,count(t1.zoneid_sfg) NumberofZVDeployments       
+       into ##ZV_Deployments_MCA
+       from ods_owner.fact_nivel1_cra_ovf_mca t1
+       inner join ##incis_mes_zv t2
+              on (t1.s#ins = t2.s#ins
+                     and t1.s#inc = t2.s#inc
+                     and t1.id_country =t2.id_country)
+       where zoneid_sfg is not null 
+       group by t1.s#ins
+       having count(t1.zoneid_sfg) > 0;
+
+       --Cálculos para Zerovision
+       select t1.s#ins,
+              PK_FD as K_FD,
+              NumberofZVDeployments,
+              0 as NumberofZVActivations,      -- no están recogiendo los success para el resto de paises
+              'S' as Platform,
+              K_DeviceType
+       into ##Ins_zerovision                   
+       from ##tipo_disp t1
+       inner join ##ZV_Deployments_MCA t2
+              on (t1.s#ins = t2.s#ins)
+       where K_DeviceType in (-22,-23)    -- Zerovision
+              ; 
+
+       select K_FD,
+              Platform,
+              sum(NumberofZVDeployments) as NumberofZVDeployments,
+              sum(NumberofZVActivations) as NumberofZVActivations
+       into ##final_zerovision
+       from ##Ins_zerovision
+       group by K_FD,
+              Platform;                
+
+ENDIF;
+
+--Bloque de Reproceso
+call SP_ODS_CONTROL_TABLE_LOCK('FACT_GROUP_ZEROVISION_S','SP_ODS_FACT_INSTALLATIONS_DEVICES_S','LOCK');
+       delete from ods_owner.FACT_GROUP_ZEROVISION_S 
+       where CAST(SUBSTRING(K_FD,1,6) as integer)= var_reportPeriod
+              and SUBSTRING(K_FD,8,3) = var_count_iso3;
+       commit; 
+       
+       message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Borrados FACT_GROUP_ZEROVISION_S.' type info to client;
+       
+       insert into ods_owner.FACT_GROUP_ZEROVISION_S 
+              (K_FD,NumberofZVDeployments,NumberofZVActivations,Platform,ReportDateTime)
+       select K_FD,NumberofZVDeployments,NumberofZVActivations,Platform,getdate()
+       from ##final_zerovision;
+       commit;   
+       
+       message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Insertados FACT_GROUP_ZEROVISION_S. Periodo '||var_reportPeriod type info to client;
+call SP_ODS_CONTROL_TABLE_LOCK('FACT_GROUP_ZEROVISION_S','SP_ODS_FACT_INSTALLATIONS_DEVICES_S','UNLOCK'); 
+
+message  ' ==================================  FIN ZEROVISION ======================================= '  type info to client;
+  
+
+-- ** ***************************************************************************************
+-- **                                            INCIDENCES
+-- ** ***************************************************************************************
+
+message  ' ==================================  INCIDENCIAS ======================================= '  type info to client;
+
+
+IF var_country_name<>'FRANCE' THEN
+
+       IF var_country_name='ESPAÑA' THEN
+
+              select s#ins,s#inc,id_country,zonid,oper_cancel_inci,id_tipo_inci,flag_cancelada_gta, flag_atendidaGTA
+              into ##incis_mes
+              from ods_owner.fact_nivel1_cra
+              where year(fx_crea_inci) = var_anio
+                     and month(fx_crea_inci) = var_mes
+                     and cola_inicial in (1,2);  
+
+              select t1.*,
+                     t2.id_tipo_clasif_senial_ps,
+                     substring(TRIM((t2.zoneid_ps )),1,2) as sub_zoneid_ps,
+                     t3.panel ,
+                     t3.class7,
+                     t3.Mon_br,
+                     t4.incidence_type,
+                     t5.clasif_senal
+              into ##deta_inci_mes
+              from ##incis_mes t1
+              left join ods_owner.fact_nivel1_cra_ovf t2
+                            on (t1.s#ins = t2.s#ins
+                                   and t1.s#inc = t2.s#inc)
+              left join ods_owner.D_INSTALACION_INT t3	
+                            on (t1.s#ins = t3.s#ins 
+                            and t1.id_country = t3.id_country)
+              left join ods_owner.d_incidence_type t4
+                            on (t1.id_tipo_inci = t4.id_cod)
+              left join ods_owner.d_clasif_senal t5
+                            on (t2.id_tipo_clasif_senial_ps = t5.id_cod);      
+          
+
+              select incidence_type, sub_zoneid_ps, clasif_senal, s#inc, s#ins, zonid, flag_cancelada_gta
+              into ##bolsa_sur_inci
+              from ##deta_inci_mes
+              where panel not in ('ONROAD','SENIORS','SDVSFUS','SDVSFUS-D','SCMOVIL','SENIORS-D')
+                     and class7 not in ('T')
+                     and Mon_br not in  ('DEMO','JMDEMO')
+                     and incidence_type NOT IN ( 'ASI','BAT','BA2','ABT','AAC')
+                     and oper_cancel_inci not in ('IIC','CAN_MNTO')
+                     and clasif_senal not in ('IGC','XBC');     
+
+       ELSEIF var_country_name='ITALIA' THEN                   
+              select s#ins,s#inc,id_country,zonid,id_tipo_inci,mon_stat,id_tipo_cancel,panel, flag_cancelada_gta
+              into ##incis_mes
+              from ods_ita.fact_nivel1_cra_mca
+              where year(fx_crea_inci) = var_anio
+                     and month(fx_crea_inci) = var_mes
+                     and cola_inicial not in (6)
+                     and id_country = nid_country;
+
+              select t1.*,
+                     t2.id_tipo_clasif_senial_ps,
+                     substring(TRIM((t2.zoneid_ps )),1,2) as sub_zoneid_ps,
+                     t3.desc_event_type,
+                     t4.incidence_type,
+                     t5.clasif_senal 
+              into ##deta_inci_mes
+              from ##incis_mes t1
+              left join ods_ita.fact_nivel1_cra_ovf_mca t2
+                            on (t1.id_country = t2.id_country
+                                   and t1.s#ins = t2.s#ins
+                                   and t1.s#inc = t2.s#inc)
+              left join ods_ita.d_incidence_event_type_mca t3  
+                                   on (t1.id_tipo_cancel = t3.id_cod
+                                   and t3.id_country = nid_country)
+              left join ods_ita.d_incidence_type_mca t4
+                            on (t4.id_country= nid_country
+                                   and t1.id_tipo_inci = t4.id_cod)
+              left join ods_ita.d_clasif_senal_mca t5
+                            on (t5.id_country= nid_country
+                                   and t2.id_tipo_clasif_senial_ps = t5.id_cod);   
+
+              select incidence_type, sub_zoneid_ps, clasif_senal, s#inc, s#ins, zonid, flag_cancelada_gta
+              into ##bolsa_sur_inci
+              from ##deta_inci_mes
+              where panel not in ('ONROAD','SENIORS','SDVSFUS','SDVSFUS-D','SCMOVIL','SENIORS-D')
+                     and mon_stat not in ('TEST');           
+
+       ELSEIF var_country_name='PORTUGAL' THEN              
+
+              select s#ins,s#inc,id_country,zonid,oper_cancel_inci,id_tipo_inci,flag_cancelada_gta,id_tipo_cancel,panel
+              into ##incis_mes
+              from ods_owner.fact_nivel1_cra_mca
+              where year(fx_crea_inci) = var_anio
+                     and month(fx_crea_inci) = var_mes
+                     and cola_inicial in (1,3)
+                     and id_country = nid_country;
+
+              select t1.*,
+                     t2.id_tipo_clasif_senial_ps,
+                     substring(TRIM((t2.zoneid_ps )),1,2) as sub_zoneid_ps,
+                     t3.desc_event_type,
+                     t4.incidence_type,
+                     t5.clasif_senal 
+              into ##deta_inci_mes
+              from ##incis_mes t1
+              left join ods_owner.fact_nivel1_cra_ovf_mca t2
+                            on (t1.id_country = t2.id_country
+                                   and t1.s#ins = t2.s#ins
+                                   and t1.s#inc = t2.s#inc)
+              left join ods_owner.d_incidence_event_type_mca t3  
+                                   on (t1.id_tipo_cancel = t3.id_cod
+                                   and t3.id_country = nid_country)
+              left join ods_owner.d_incidence_type_mca t4
+                            on (t4.id_country= nid_country
+                                   and t1.id_tipo_inci = t4.id_cod)
+              left join ods_owner.d_clasif_senal_mca t5
+                            on (t5.id_country= nid_country
+                                   and t2.id_tipo_clasif_senial_ps = t5.id_cod);   
+
+              select incidence_type, sub_zoneid_ps, clasif_senal, s#inc, s#ins, zonid, flag_cancelada_gta
+              into ##bolsa_sur_inci
+              from ##deta_inci_mes
+              where panel not in ('ONROAD','SENIORS','SDVSFUS','SDVSFUS-D','SCMOVIL','SENIORS-D')
+                     and incidence_type NOT IN ('ABT','AAC')        
+                     and oper_cancel_inci not in ('IIC','CAN_MNTO')     ;
+
+       ELSE IF var_country_name='PERU' THEN              
+              select s#ins,s#inc,id_country,zonid,id_tipo_inci,mon_stat,id_tipo_cancel,panel, flag_cancelada_gta
+              into ##incis_mes
+              from ods_owner.fact_nivel1_cra_mca
+              where year(fx_crea_inci) = var_anio
+                     and month(fx_crea_inci) = var_mes
+                     and cola_inicial in (3,6)
+                     and id_country = nid_country;
+
+              ELSEIF var_country_name='CHILE' THEN              
+                     select s#ins,s#inc,id_country,zonid,id_tipo_inci,mon_stat,id_tipo_cancel,panel, flag_cancelada_gta
+                     into ##incis_mes
+                     from ods_owner.fact_nivel1_cra_mca
+                     where year(fx_crea_inci) = var_anio
+                            and month(fx_crea_inci) = var_mes
+                            and cola_inicial in (1,9)
+                            and id_country = nid_country;
+
+              ELSEIF var_country_name='ARGENTINA' THEN              
+                     select s#ins,s#inc,id_country,zonid,id_tipo_inci,mon_stat,id_tipo_cancel,panel, flag_cancelada_gta
+                     into ##incis_mes
+                     from ods_owner.fact_nivel1_cra_mca
+                     where year(fx_crea_inci) = var_anio
+                            and month(fx_crea_inci) = var_mes
+                            and cola_inicial in (3)
+                            and id_country = nid_country;
+              ELSEIF var_country_name in ('UK','IRELAND') THEN              
+                     select s#ins,s#inc,id_country,zonid,id_tipo_inci,mon_stat,id_tipo_cancel,panel, flag_cancelada_gta
+                     into ##incis_mes
+                     from ods_owner.fact_nivel1_cra_mca
+                     where year(fx_crea_inci) = var_anio
+                            and month(fx_crea_inci) = var_mes
+                            and cola_inicial in (5,2)
+                            and id_country = nid_country;
+                ELSEIF var_country_name in ('BRASIL') THEN              
+                     select s#ins,s#inc,id_country,zonid,id_tipo_inci,mon_stat,id_tipo_cancel,panel, flag_cancelada_gta
+                     into ##incis_mes
+                     from ods_owner.fact_nivel1_cra_mca
+                     where year(fx_crea_inci) = var_anio
+                            and month(fx_crea_inci) = var_mes
+                            --and cola_inicial in (5,2)
+                            and id_country = nid_country;
+              END IF;       -- MCA
+
+              message  ' COGEMOS LAS INCIDENCIAS DE FACT NIVEL 1 CRA MCA '  type info to client;
+
+              select t1.*,
+                     t2.id_tipo_clasif_senial_ps,
+                     substring(TRIM((t2.zoneid_ps )),1,2) as sub_zoneid_ps,
+                     t3.desc_event_type,
+                     t4.incidence_type,
+                     t5.clasif_senal 
+              into ##deta_inci_mes
+              from ##incis_mes t1
+              left join ods_owner.fact_nivel1_cra_ovf_mca t2
+                            on (t1.id_country = t2.id_country
+                                   and t1.s#ins = t2.s#ins
+                                   and t1.s#inc = t2.s#inc)
+              left join ods_owner.d_incidence_event_type_mca t3  
+                                   on (t1.id_tipo_cancel = t3.id_cod
+                                   and t3.id_country = nid_country)
+              left join ods_owner.d_incidence_type_mca t4
+                            on (t4.id_country= nid_country
+                                   and t1.id_tipo_inci = t4.id_cod)
+              left join ods_owner.d_clasif_senal_mca t5
+                            on (t5.id_country= nid_country
+                                   and t2.id_tipo_clasif_senial_ps = t5.id_cod);   
+
+              select incidence_type, sub_zoneid_ps, clasif_senal, s#inc, s#ins, zonid, flag_cancelada_gta
+              into ##bolsa_sur_inci
+              from ##deta_inci_mes
+              where panel not in ('ONROAD','SENIORS','SDVSFUS','SDVSFUS-D','SCMOVIL','SENIORS-D');  
+       END IF ;             
+
+       select t1.*,
+              t2.incidence_type,
+              t2.sub_zoneid_ps,
+              t2.clasif_senal,
+              t2.s#inc,
+              t2.flag_cancelada_gta
+       into ##inst_dev_inc   
+       from ##tipo_disp t1
+       left join ##bolsa_sur_inci t2
+                     on (t1.s#ins = t2.s#ins
+                     and t1.zone = t2.zonid);
+
+       select distinct * 
+       into ##inc_dev_uniq
+       from ##inst_dev_inc                    
+       where s#inc is not null;
+
+       select t1.*,
+              case when t1.incidence_type in ('RO','RP','CEN','RC','SJ') then 56                         -- Burglar Alarm
+              when t1.incidence_type in ('FU') then 64                                                   -- Fire       
+              when t1.incidence_type in ('SO','SOM') then 66                                             -- Panic/SOS
+              when t1.incidence_type in ('TA') then 70                                                   -- Tamper
+              when t1.incidence_type in ('IMP') then 205                                                 -- Shock
+              when t1.incidence_type in ('CC') then 211                                                  -- Threat
+              when t1.incidence_type in ('ASI') then 252                                                 -- Mobile SOS
+              when t1.incidence_type in ('AC_','AC','AAC','BA','CEB','ABT','BAT','BA2') then -2          -- Power Cut
+              when t1.incidence_type in ('SOS','FLL') then -3                                            -- Senior
+              when (t1.incidence_type in ('SJ') and t1.sub_zoneid_ps = 'CE')
+              or (t1.incidence_type in ('GRV') and t1.sub_zoneid_ps = 'JS')
+              or (t1.incidence_type in ('SJ','???') and t1.sub_zoneid_ps = 'JS'
+                     and t1.clasif_senal in ('UNKNOWN','FG7','GRV','RAV'))  then -4                      -- Jamming
+              when t1.incidence_type in ('ROM') then -5                                                  -- Levantamiento
+              else -1                                                                                    -- Defecto 
+              end as K_Alarm_Incident_Type
+       into ##bolsa_inc_type              
+       from ##inc_dev_uniq t1;   
+
+       select PK_FD as K_FD,
+              K_Alarm_Incident_Type,
+              flag_cancelada_gta as K_Autoclose,
+              count(distinct (s#inc)) as NumberOfAlarmIncidents,
+              count(distinct(s#ins)) as NumInstAlarmIncident,
+              'S' as Platform
+       into ##final_Incidences
+       from ##bolsa_inc_type
+       group by K_FD,K_Alarm_Incident_Type,K_Autoclose,Platform; 
+
+       call SP_ODS_CONTROL_TABLE_LOCK('FACT_GROUP_ALARM_INCIDENTS_S','SP_ODS_FACT_INSTALLATIONS_DEVICES_S','LOCK');
+          delete from ods_owner.FACT_GROUP_ALARM_INCIDENTS_S 
+          where CAST(SUBSTRING(K_FD,1,6) as integer)= var_reportPeriod
+                 and SUBSTRING(K_FD,8,3) = var_count_iso3;
+          commit; 
+   
+          message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Borrados FACT_GROUP_ALARM_INCIDENTS_S.' type info to client;
+   
+          insert into ods_owner.FACT_GROUP_ALARM_INCIDENTS_S 
+                 (K_FD, K_Alarm_Incident_Type, NumberOfAlarmIncidents, NumInstAlarmIncident, Platform, ReportDateTime, K_Autoclose)
+          select K_FD,K_Alarm_Incident_Type,NumberOfAlarmIncidents,NumInstAlarmIncident,Platform,getdate(), K_Autoclose
+          from ##final_Incidences;
+          commit;
+   
+          message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Insertados FACT_GROUP_ALARM_INCIDENTS_S. Periodo '||var_reportPeriod type info to client;
+       call SP_ODS_CONTROL_TABLE_LOCK('FACT_GROUP_ALARM_INCIDENTS_S','SP_ODS_FACT_INSTALLATIONS_DEVICES_S','UNLOCK');    
+
+END IF;
+
+message  ' ==================================  FIN INCIDENCIAS ======================================= '  type info to client;
+
+
+
+-- ** ***************************************************************************************
+-- **                                            SERVICES
+-- ** ***************************************************************************************
+
+
+-- * Guardian
+select distinct s#ins
+into ##ins_guardian
+from ods_owner.D_BOTON_ROJO
+where id_country = nid_country
+       and fecha_carga = date(date_fecha_portf_in)-1
+       and enabled = 1 and flagBotonRojo IN (3,4); 
+
+select t1.K_FI,
+       case when t2.s#ins is not null then 1 else 0 end as is_guard,
+       t1.s#ins
+into ##inst_is_guard
+from ##tipo_disp t1
+inner join ##ins_guardian t2
+       on (t1.s#ins = t2.s#ins);
+
+select K_FI,
+       count(distinct(s#ins)) as NumberOfInstallations
+into ##ins_with_guard
+from ##inst_is_guard
+where is_guard=1
+group by K_FI;
+
+select distinct(K_FI) as K_FI
+into ##group_devices
+from ##tipo_disp;
+
+select t1.K_FI,
+       153 as K_Service_Type,
+       coalesce (t2.NumberOfInstallations,0) as NumberOfInstallations
+into ##finalGuardian
+from ##group_devices t1
+left join ##ins_with_guard t2
+       on (t1.K_FI = t2.K_FI)
+where t2.NumberOfInstallations<>0;
+
+
+call SP_ODS_CONTROL_TABLE_LOCK('FACT_GROUP_INSTALLATION_ACTIVE_SERVICES_S','FACT_GROUP_INSTALLATION_ACTIVE_SERVICES_S','LOCK');
+       delete from ods_owner.FACT_GROUP_INSTALLATION_ACTIVE_SERVICES_S 
+       where CAST(SUBSTRING(K_FI,1,6) as integer)= var_reportPeriod
+       and SUBSTRING(K_FI,8,3) = var_count_iso3;
+       commit; 
+
+       message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Borrados FACT_GROUP_INSTALLATION_ACTIVE_SERVICES_S.' type info to client;
+
+       insert into ods_owner.FACT_GROUP_INSTALLATION_ACTIVE_SERVICES_S 
+              (K_FI,K_Service_Type,NumberOfInstallations,ReportDateTime)
+       select K_FI,K_Service_Type,NumberOfInstallations,getdate()
+       from ##finalGuardian;
+       commit;
+
+       message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Insertados FACT_GROUP_INSTALLATION_ACTIVE_SERVICES_S. Periodo '||var_reportPeriod type info to client;
+call SP_ODS_CONTROL_TABLE_LOCK('FACT_GROUP_INSTALLATION_ACTIVE_SERVICES_S','FACT_GROUP_INSTALLATION_ACTIVE_SERVICES_S','UNLOCK'); 
+    
+
+-- ** ***************************************************************************************
+-- **                                            ENGAGEMENT
+-- ** ***************************************************************************************
+
+set previous_day = date(date_fecha_portf_in)-1; 
+select dateadd(mm,-2,previous_day) into dat_three_month_before;
+select cast((cast(year(dat_three_month_before) as varchar(6))||'/'||
+       cast(month(dat_three_month_before) as varchar(2))||'/01' ) as date) into dat_previous_3month;      
+
+-- Info de los eventos ult. 3 meses
+select numinst,action ,screen ,category ,severity, deviceosversion ,devicename ,devicemanufacturer,month(date(apptimestamp)) mm,
+       year(date(apptimestamp))||month(date(apptimestamp)) as yyyymm, apptimestamp
+into ##bolsa_tempo2
+from ods_owner.SRC_KPISTecnologia_src_ccddevent
+where country = var_count_iso2
+       and date(apptimestamp) between date(dat_previous_3month) and date(getdate())
+       and action = 'CLICK'
+       and screen in ('IMAGE','CAMERA_STREAMING','OVERVIEW','LOGIN');
+
+select t1.PK_FI,t1.ins_no,t2.action ,t2.screen ,t2.category ,t2.severity, t2.deviceosversion ,t2.devicename ,t2.devicemanufacturer,
+       t2.yyyymm, t2.apptimestamp
+into ##bolsa_port_eventos
+from ##portfolio_deta t1
+inner join ##bolsa_tempo2 t2
+       on t1.ins_no = t2.numinst;        
+
+select PK_FI as K_FI,
+       yyyymm,
+       ins_no,
+       deviceosversion ,devicename ,devicemanufacturer,apptimestamp,
+       case when screen ='IMAGE' and action = 'CLICK' and category ='IMAGE' and severity ='INFO' then 1001
+              when screen ='CAMERA_STREAMING' and action = 'CLICK' and category ='CAMERAS' and severity ='INFO' then 1003
+              when screen ='OVERVIEW' and action = 'CLICK' and category in ('ARM','DISARM') and severity ='INFO' then 1016
+              when screen ='LOGIN' and action = 'CLICK' and category ='LOGIN'  and severity ='INFO'then 1028
+       else 0 end as K_App_Event      
+into ##agg_3m_KFI_events
+from ##bolsa_port_eventos;
+
+-- ** Datos diarios
+select *
+into ##bolsa_ev_diaria
+from ##agg_3m_KFI_events
+where date(apptimestamp)=date(date_fecha_portf_in)-1
+and K_App_Event <> 0;
+
+select distinct K_FI,K_App_Event
+into ##bolsa_K_FI
+from ##bolsa_ev_diaria   ;      
+
+-- NumberOfInstallations,NumberOfEvents
+select K_FI,
+       K_App_Event,
+       count(distinct(ins_no)) as NumberOfInstallations,
+       count() as NumberOfEvents
+into ##event1
+from ##bolsa_ev_diaria
+group by K_FI,K_App_Event;
+
+-- NumberOfAppDevices
+select K_FI,
+       K_App_Event,
+       deviceosversion ,devicename ,devicemanufacturer
+into ##event2aux
+from ##bolsa_ev_diaria
+group by K_FI,K_App_Event,deviceosversion ,devicename ,devicemanufacturer,K_App_Event;
+
+select K_FI,
+       K_App_Event,
+       count() as NumberOfAppDevices
+into ##event2
+from ##event2aux
+group by K_FI,K_App_Event;       
+
+-- NumberOfRecurringInstallations (Number of installations with more then 1 event in the reporting month)
+select K_FI,
+       K_App_Event,
+       ins_no,
+       count() num_events
+into ##event3aux
+from ##bolsa_ev_diaria
+group by K_FI,K_App_Event,ins_no
+having num_events>1;
+
+select K_FI,
+       K_App_Event,
+       count(distinct(ins_no)) as NumberOfRecurringInstallations
+into ##event3 
+from ##event3aux
+group by K_FI,K_App_Event;
+
+-- ** Datos trimestrales
+
+-- NumberOfRecurringAppDevices. (Number of  device/app/user with event in 3 consecutive months (the reporting month, -1 month before, - 2 months before)
+select K_FI,K_App_Event,
+       deviceosversion ,devicename ,devicemanufacturer,COUNT(distinct(yyyymm)) tot_mm
+into ##event4aux
+from ##agg_3m_KFI_events
+where K_App_Event <>0
+group by K_FI,K_App_Event,deviceosversion ,devicename ,devicemanufacturer
+having tot_mm =3;
+
+select K_FI,
+       K_App_Event,
+       count() as NumberOfRecurringAppDevices
+into ##event4
+from ##event4aux
+group by K_FI,K_App_Event;
+
+select t1.K_FI,
+       t1.K_App_Event,
+       coalesce(t2.NumberOfInstallations,0) as NumberOfInstallations,
+       coalesce(t2.NumberOfEvents,0) as NumberOfEvents,
+       coalesce(t3.NumberOfAppDevices,0) as NumberOfAppDevices,
+       coalesce(t4.NumberOfRecurringInstallations,0) as NumberOfRecurringInstallations,
+       coalesce(t5.NumberOfRecurringAppDevices,0) as NumberOfRecurringAppDevices
+into ##finalEngagement
+from ##bolsa_K_FI t1
+left join ##event1 t2
+       on t1.K_FI = t2.K_FI
+       and t1.K_App_Event = t2.K_App_Event
+left join ##event2 t3
+       on t1.K_FI = t3.K_FI
+       and t1.K_App_Event = t3.K_App_Event
+left join ##event3 t4
+       on t1.K_FI = t4.K_FI
+       and t1.K_App_Event = t4.K_App_Event
+left join ##event4 t5
+       on t1.K_FI = t5.K_FI
+       and t1.K_App_Event = t5.K_App_Event;  
+
+call SP_ODS_CONTROL_TABLE_LOCK('FACT_GROUP_APP_ENGAGEMENT_S','FACT_GROUP_APP_ENGAGEMENT_S','LOCK');
+       delete from ods_owner.FACT_GROUP_APP_ENGAGEMENT_S 
+       where CAST(SUBSTRING(K_FI,1,6) as integer)= var_reportPeriod
+       and SUBSTRING(K_FI,8,3) = var_count_iso3;
+       commit; 
+
+       message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Borrados FACT_GROUP_APP_ENGAGEMENT_S.' type info to client;
+
+       insert into ods_owner.FACT_GROUP_APP_ENGAGEMENT_S 
+              (K_FI,K_App_Event,NumberOfInstallations,NumberOfRecurringInstallations,NumberOfAppDevices,NumberOfRecurringAppDevices,NumberOfEvents,Platform,ReportDateTime)
+       select K_FI,K_App_Event,NumberOfInstallations,NumberOfRecurringInstallations,NumberOfAppDevices,NumberOfRecurringAppDevices,NumberOfEvents,'S',getdate()
+       from ##finalEngagement;
+       commit;
+
+       message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Insertados FACT_GROUP_APP_ENGAGEMENT_S. Periodo '||var_reportPeriod type info to client;
+call SP_ODS_CONTROL_TABLE_LOCK('FACT_GROUP_APP_ENGAGEMENT_S','FACT_GROUP_APP_ENGAGEMENT_S','UNLOCK');  
+
+
+-- ** ***************************************************************************************
+-- **                                            ENGAGEMENT MONTHLY
+-- ** ***************************************************************************************
+
+select t1.K_FI,t1.ins_no,t1.deviceosversion,t1.devicename,t1.devicemanufacturer,t1.apptimestamp,t1.K_App_Event,
+       substring(t1.K_FI,1,6) as ReportPeriod,
+       substring(t1.K_FI,8,3) as K_Country,
+       case when substring(deviceosversion,1,7)='Android' then 1 else 2 end as K_App_OS
+into ##bolsa_events_OS 
+from ##bolsa_ev_diaria t1;
+
+select distinct ReportPeriod,
+       K_Country,
+       K_App_Event,
+       K_App_OS
+into ##bolsa_K_FI_OS
+from ##bolsa_events_OS ;
+
+-- NumberOfEvents
+select ReportPeriod,
+       K_Country,
+       K_App_Event,
+       K_App_OS,
+       count() as NumberOfEvents
+into ##event1_OS
+from ##bolsa_events_OS
+group by ReportPeriod,K_Country,K_App_Event,K_App_OS;
+
+-- NumberOfAppDevices
+select ReportPeriod,
+       K_Country,
+       K_App_Event,
+       K_App_OS,
+       deviceosversion ,devicename ,devicemanufacturer
+into ##event2aux_OS
+from ##bolsa_events_OS
+group by ReportPeriod,K_Country,K_App_Event,K_App_OS,deviceosversion ,devicename ,devicemanufacturer,K_App_Event;
+
+select ReportPeriod,
+       K_Country,
+       K_App_Event,
+       K_App_OS,
+       count() as NumberOfAppDevices
+into ##event2_OS
+from ##event2aux_OS
+group by ReportPeriod,K_Country,K_App_Event,K_App_OS;
+
+-- ** Datos trimestrales
+
+-- NumberOfRecurringAppDevices. (Number of  device/app/user with event in 3 consecutive months (the reporting month, -1 month before, - 2 months before)
+select substring(K_FI,1,6) as ReportPeriod, 
+       substring(K_FI,8,3) as K_Country, K_App_Event,
+       case when substring(deviceosversion,1,7)='Android' then 1 else 2 end as K_App_OS,
+       deviceosversion ,devicename ,devicemanufacturer,COUNT(distinct(yyyymm)) tot_mm
+into ##event4aux_OS
+from ##agg_3m_KFI_events
+where K_App_Event <>0
+group by ReportPeriod, K_Country, K_App_Event,K_App_OS,deviceosversion ,devicename ,devicemanufacturer
+having tot_mm =3;
+
+select ReportPeriod, K_Country, K_App_Event,K_App_OS,
+       count() as NumberOfRecurringAppDevices
+into ##event4_OS
+from ##event4aux_OS
+group by ReportPeriod, K_Country, K_App_Event,K_App_OS;
+
+select cast(t1.ReportPeriod as int) ReportPeriod,
+       t1.K_Country,
+       t1.K_App_Event,
+       t1.K_App_OS,
+       coalesce(t2.NumberOfEvents,0) as NumberOfEvents,
+       coalesce(t3.NumberOfAppDevices,0) as NumberOfAppDevices,
+       coalesce(t5.NumberOfRecurringAppDevices,0) as NumberOfRecurringAppDevices
+into ##finalEngagement_Monthly
+from ##bolsa_K_FI_OS t1
+left join ##event1_OS t2
+       on t1.ReportPeriod = t2.ReportPeriod
+       and t1.K_Country = t2.K_Country
+       and t1.K_App_Event = t2.K_App_Event
+       and t1.K_App_OS = t2.K_App_OS
+left join ##event2_OS t3
+       on t1.ReportPeriod = t3.ReportPeriod
+       and t1.K_Country = t3.K_Country
+       and t1.K_App_Event = t3.K_App_Event
+       and t1.K_App_OS = t3.K_App_OS
+left join ##event4_OS t5
+       on t1.ReportPeriod = t5.ReportPeriod
+       and t1.K_Country = t5.K_Country
+       and t1.K_App_Event = t5.K_App_Event
+       and t1.K_App_OS = t5.K_App_OS;
+
+call SP_ODS_CONTROL_TABLE_LOCK('FACT_GROUP_APP_ENGAGEMENT_APPDEVICE_MONTHLY_S','FACT_GROUP_APP_ENGAGEMENT_APPDEVICE_MONTHLY_S','LOCK');
+       delete from ods_owner.FACT_GROUP_APP_ENGAGEMENT_APPDEVICE_MONTHLY_S 
+       where ReportPeriod= var_reportPeriod
+       and K_Country = var_count_iso3;
+       commit; 
+
+       message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Borrados FACT_GROUP_APP_ENGAGEMENT_APPDEVICE_MONTHLY_S.' type info to client;
+
+       insert into ods_owner.FACT_GROUP_APP_ENGAGEMENT_APPDEVICE_MONTHLY_S 
+              (ReportPeriod,K_Country,K_App_Event,NumberOfAppDevices,NumberOfRecurringAppDevices,NumberOfEvents,K_App_OS,Platform,ReportDateTime)
+       select ReportPeriod,K_Country,K_App_Event,NumberOfAppDevices,NumberOfRecurringAppDevices,NumberOfEvents,K_App_OS,'S',getdate()
+       from ##finalEngagement_Monthly;
+       commit;
+
+       message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Insertados FACT_GROUP_APP_ENGAGEMENT_APPDEVICE_MONTHLY_S. Periodo '||var_reportPeriod type info to client;
+call SP_ODS_CONTROL_TABLE_LOCK('FACT_GROUP_APP_ENGAGEMENT_APPDEVICE_MONTHLY_S','FACT_GROUP_APP_ENGAGEMENT_APPDEVICE_MONTHLY_S','UNLOCK');    
+
+-- ** ***************************************************************************************
+-- **                                            ENGAGEMENT DAILY
+-- ** ***************************************************************************************
+select day(date_fecha_portf_in) into var_dia;
+select var_anio*10000+var_mes*100+var_dia into var_K_date;
+
+select t1.K_FI,t1.ins_no,t1.deviceosversion,t1.devicename,t1.devicemanufacturer,t1.apptimestamp,t1.K_App_Event,
+       var_K_date as K_Date,
+       substring(t1.K_FI,8,3) as K_Country,
+       case when substring(deviceosversion,1,7)='Android' then 1 else 2 end as K_App_OS
+into ##bolsa_events_DAY
+from ##bolsa_ev_diaria t1;
+
+select distinct t1.K_Date,
+              t1.K_Country,
+              t1.K_App_Event,
+              t1.K_App_OS
+into ##bolsa_K_FI_DAY 
+from ##bolsa_events_DAY t1;
+
+-- NumberOfEvents
+select K_Date,
+       K_Country,
+       K_App_Event,
+       K_App_OS,
+       count() as NumberOfEvents
+into ##event1_DAY
+from ##bolsa_events_DAY
+group by K_Date,K_Country,K_App_Event,K_App_OS;
+
+-- NumberOfAppDevices
+select K_Date,
+       K_Country,
+       K_App_Event,
+       K_App_OS,
+       deviceosversion ,devicename ,devicemanufacturer
+into ##event2aux_DAY
+from ##bolsa_events_DAY
+group by K_Date,K_Country,K_App_Event,K_App_OS,deviceosversion ,devicename ,devicemanufacturer,K_App_Event;
+
+select K_Date,
+       K_Country,
+       K_App_Event,
+       K_App_OS,
+       count() as NumberOfAppDevices
+into ##event2_DAY
+from ##event2aux_DAY
+group by K_Date,K_Country,K_App_Event,K_App_OS;
+
+-- Unificamos
+select t1.K_Date,
+       t1.K_Country,
+       t1.K_App_Event,
+       t1.K_App_OS,
+       coalesce(t2.NumberOfEvents,0) as NumberOfEvents,
+       coalesce(t3.NumberOfAppDevices,0) as NumberOfAppDevices
+into ##finalEngagement_Daily
+from ##bolsa_K_FI_DAY t1
+left join ##event1_DAY t2
+       on t1.K_Date = t2.K_Date
+       and t1.K_Country = t2.K_Country
+       and t1.K_App_Event = t2.K_App_Event
+       and t1.K_App_OS = t2.K_App_OS
+left join ##event2_DAY t3
+       on t1.K_Date = t3.K_Date
+       and t1.K_Country = t3.K_Country
+       and t1.K_App_Event = t3.K_App_Event
+       and t1.K_App_OS = t3.K_App_OS;
+
+call SP_ODS_CONTROL_TABLE_LOCK('FACT_GROUP_APP_ENGAGEMENT_APPDEVICE_DAILY_S','FACT_GROUP_APP_ENGAGEMENT_APPDEVICE_DAILY_S','LOCK');
+       delete from ods_owner.FACT_GROUP_APP_ENGAGEMENT_APPDEVICE_DAILY_S 
+       where K_Date= var_K_date
+       and K_Country = var_count_iso3;
+       commit; 
+
+       message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Borrados FACT_GROUP_APP_ENGAGEMENT_APPDEVICE_DAILY_S.' type info to client;
+
+       insert into ods_owner.FACT_GROUP_APP_ENGAGEMENT_APPDEVICE_DAILY_S 
+              (K_Date,K_Country,K_App_Event,NumberOfAppDevices,NumberOfEvents,K_App_OS,Platform,ReportDateTime)
+       select K_Date,K_Country,K_App_Event,NumberOfAppDevices,NumberOfEvents,K_App_OS,'S',getdate()
+       from ##finalEngagement_Daily;
+       commit;
+
+       message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Insertados FACT_GROUP_APP_ENGAGEMENT_APPDEVICE_DAILY_S. Periodo '||var_reportPeriod type info to client;
+call SP_ODS_CONTROL_TABLE_LOCK('FACT_GROUP_APP_ENGAGEMENT_APPDEVICE_DAILY_S','FACT_GROUP_APP_ENGAGEMENT_APPDEVICE_DAILY_S','UNLOCK');    
+
+-- ** ***************************************************************************************
+-- **                                            TASK SUCCESS
+-- ** ***************************************************************************************
+
+    ------------------------------------------- ARM AND DISARM ---------------------------------
+
+    SELECT * into ##armsanddisarms from 
+    customerservices_Request t1 inner join customerservices_actiontypesdescription t2
+    on action = actiontypeid
+    where request in ('ARM', 'DARM', 'DARMA', 'DARMC', 'ARMDA', 'ARMIN', 'ARMAN') and month("date") = var_mes and year("date") = var_anio and country = var_count_iso2;
+
+    select * into ##armsanddisarms2 from ##portfolio_deta t1
+    inner join ##armsanddisarms t2
+    on t1.ins_no = t2.numInst and t2.country = var_count_iso2;
+
+    select PK_FI as K_FI,
+       1016 as K_App_Event,
+       count(distinct(ins_no)) as NumberOfInstallations,
+       count() as NumberOfEvents,
+       case when "status" = 'procesed' then 10
+       when "status" = 'error' then 23
+       else 0 end as K_App_Task_Status
+    into ##armsanddisarms3
+    from ##armsanddisarms2
+    group by K_FI,K_App_Event,"status";
+
+     delete from ods_owner.FACT_APP_TASK_STATUS_S  
+          where CAST(SUBSTRING(K_FI,1,6) as integer)= var_reportPeriod
+                 and SUBSTRING(K_FI,8,3) = var_count_iso3;
+          commit; 
+
+    insert into ods_owner.FACT_APP_TASK_STATUS_S 
+              (K_FI,K_App_Event,NumberOfInstallations,NumberOfEvents,K_App_Task_Status,DeviceBrandName,BackendDurationSec,Platform,ReportDateTime)
+       select K_FI,K_App_Event,NumberOfInstallations,NumberOfEvents,K_App_Task_Status,null,null,'S',getdate()
+       from ##armsanddisarms3;
+       commit;
+
+    ------------------------------------------------------------------ IMAGE -------------------------------------------------------------------
+
+    SELECT numInst, country, "date", "status" into ##imagerequests FROM customerservices_Request inner join customerservices_actiontypesdescription t2
+    on action = actiontypeid
+    where actiontypeid = 1016 and month("date") = var_mes and year("date") = var_anio AND country = var_count_iso2;
+
+    select * into ##imagerequests2 from ##portfolio_deta t1
+    inner join ##imagerequests t2
+    on t1.ins_no = t2.numInst and t2.country = var_count_iso2;
+
+    select PK_FI as K_FI,
+       1001 as K_App_Event,
+       count(distinct(ins_no)) as NumberOfInstallations,
+       count() as NumberOfEvents,
+       case when "status" = 'procesed' then 10
+       when "status" = 'error' then 23
+       else 0 end as K_App_Task_Status
+    into ##imagerequests3
+    from ##imagerequests2
+    group by K_FI,K_App_Event,"status";
+
+    insert into ods_owner.FACT_APP_TASK_STATUS_S 
+              (K_FI,K_App_Event,NumberOfInstallations,NumberOfEvents,K_App_Task_Status,DeviceBrandName,BackendDurationSec,Platform,ReportDateTime)
+       select K_FI,K_App_Event,NumberOfInstallations,NumberOfEvents,K_App_Task_Status,null,null,'S',getdate()
+       from ##imagerequests3;
+    
+    message proceso || ': ' || getdate() || ' > ' || @@rowcount || ' Registros Insertados FACT_APP_TASK_STATUS_S. Periodo '||var_reportPeriod type info to client;
+
+       
+       commit;
+
+    ------------------------------------------------------------------ VIDEO -----------------------------------------------------------
+
+    SELECT installationId, actionTime, a2 into ##videorequests FROM
+     customerservices_ActionRegister a inner join customerservices_country b on a.countryId = b.countryId 
+    WHERE actiontypeid = 17 and month(actionTime) = var_mes and year(actionTime) = var_anio;
+    
+    select * into ##videorequests2 from ##portfolio_deta t1
+    inner join ##videorequests t2
+    on t1.ins_no = t2.installationId and t2.a2 = var_count_iso2;
+
+    select PK_FI as K_FI,
+       1003 as K_App_Event,
+       count(distinct(ins_no)) as NumberOfInstallations,
+       count() as NumberOfEvents,
+       null as K_App_Task_Status
+    into ##videorequests3
+    from ##videorequests2
+    group by K_FI,K_App_Event, K_App_Task_Status;
+
+    insert into ods_owner.FACT_APP_TASK_STATUS_S 
+              (K_FI,K_App_Event,NumberOfInstallations,NumberOfEvents,K_App_Task_Status,DeviceBrandName,BackendDurationSec,Platform,ReportDateTime)
+       select K_FI,K_App_Event,NumberOfInstallations,NumberOfEvents,K_App_Task_Status,null,null,'S',getdate()
+       from ##videorequests3;
+       commit;
+    
+    set mensaje = proceso || ': ' || getdate() || ' -> Fin Procedimiento';
+    message mensaje type info to client;
+
+END
